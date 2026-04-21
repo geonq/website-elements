@@ -1,0 +1,377 @@
+import { useEffect, useState, useRef } from "react"
+import { addPropertyControls, ControlType } from "framer"
+
+/**
+ * SpotifyNowPlaying — BPM-reactive edition
+ * Lanyard (presence) + Deezer (BPM lookup). Free, no backend.
+ *
+ * @framerSupportedLayoutWidth any
+ * @framerSupportedLayoutHeight any
+ */
+export default function SpotifyNowPlaying(props) {
+    const {
+        discordId,
+        accentColor,
+        backgroundColor,
+        textColor,
+        mutedColor,
+        barCount,
+    } = props
+
+    const [data, setData] = useState(null)
+    const [progress, setProgress] = useState(0)
+    const [bpm, setBpm] = useState(110) // sensible default
+    const wsRef = useRef(null)
+    const heartbeatRef = useRef(null)
+    const lastTrackIdRef = useRef(null)
+
+    // ---- Lanyard WebSocket ----
+    useEffect(() => {
+        if (!discordId) return
+
+        const connect = () => {
+            const ws = new WebSocket("wss://api.lanyard.rest/socket")
+            wsRef.current = ws
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data)
+                if (msg.op === 1) {
+                    heartbeatRef.current = setInterval(() => {
+                        ws.send(JSON.stringify({ op: 3 }))
+                    }, msg.d.heartbeat_interval)
+                    ws.send(
+                        JSON.stringify({
+                            op: 2,
+                            d: { subscribe_to_id: discordId },
+                        })
+                    )
+                }
+                if (msg.op === 0) setData(msg.d)
+            }
+
+            ws.onclose = () => {
+                if (heartbeatRef.current) clearInterval(heartbeatRef.current)
+                setTimeout(connect, 3000)
+            }
+        }
+        connect()
+
+        return () => {
+            if (heartbeatRef.current) clearInterval(heartbeatRef.current)
+            if (wsRef.current) wsRef.current.close()
+        }
+    }, [discordId])
+
+    // ---- Deezer BPM lookup (runs when song changes) ----
+    // ---- Deezer BPM lookup ----
+    useEffect(() => {
+        const song = data?.spotify
+        if (!song) return
+
+        const trackId = song.track_id
+        if (trackId === lastTrackIdRef.current) return
+        lastTrackIdRef.current = trackId
+
+        const clean = (s) =>
+            s
+                .replace(/\(.*?\)/g, "")
+                .replace(/\[.*?\]/g, "")
+                .replace(/feat\.?.*/i, "")
+                .replace(/ft\.?.*/i, "")
+                .replace(/["']/g, "")
+                .trim()
+
+        const artist = clean(song.artist.split(";")[0])
+        const title = clean(song.song)
+        const query = `artist:"${artist}" track:"${title}"`
+
+        // ⬇️ REPLACE THIS with your own Cloudflare Worker URL
+        const proxyBase = "https://deezer-proxy.domkegeorg2017.workers.dev/"
+        const url = `${proxyBase}/?q=${encodeURIComponent(query)}`
+
+        console.log("[BPM] searching:", { artist, title })
+
+        fetch(url)
+            .then((r) => r.json())
+            .then((json) => {
+                const match = json?.data?.[0]
+                console.log("[BPM] match:", match)
+                if (match?.bpm && match.bpm > 0) {
+                    setBpm(match.bpm)
+                } else {
+                    setBpm(110)
+                }
+            })
+            .catch((err) => {
+                console.error("[BPM] fetch failed:", err)
+                setBpm(110)
+            })
+    }, [data])
+
+    // ---- Progress ticker ----
+    useEffect(() => {
+        if (!data?.listening_to_spotify || !data?.spotify) {
+            setProgress(0)
+            return
+        }
+        const { start, end } = data.spotify.timestamps
+        const tick = () => {
+            const now = Date.now()
+            const pct = Math.min(
+                100,
+                Math.max(0, ((now - start) / (end - start)) * 100)
+            )
+            setProgress(pct)
+        }
+        tick()
+        const interval = setInterval(tick, 500)
+        return () => clearInterval(interval)
+    }, [data])
+
+    const isListening = data?.listening_to_spotify && data?.spotify
+    const song = data?.spotify
+
+    const fmt = (ms) => {
+        const s = Math.floor(ms / 1000)
+        return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
+    }
+    const elapsed = isListening
+        ? Math.max(0, Date.now() - song.timestamps.start)
+        : 0
+    const total = isListening ? song.timestamps.end - song.timestamps.start : 0
+
+    // ---- Animation math ----
+    // One beat = 60/bpm seconds. Bars animate at half that (= eighth notes feel).
+    // Clamp to a sane range so extreme BPMs don't break the look.
+    const clampedBpm = Math.max(60, Math.min(200, bpm))
+    const beatDuration = 60 / clampedBpm // seconds per beat
+    const barAnimDuration = beatDuration / 2 // eighth notes
+
+    return (
+        <div
+            style={{
+                width: "100%",
+                height: "100%",
+                background: backgroundColor,
+                borderRadius: 12,
+                padding: 16,
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                fontFamily:
+                    "-apple-system, BlinkMacSystemFont, 'Inter', sans-serif",
+                boxSizing: "border-box",
+                overflow: "hidden",
+            }}
+        >
+            <div
+                style={{
+                    width: 64,
+                    height: 64,
+                    flexShrink: 0,
+                    borderRadius: 8,
+                    background: mutedColor,
+                    backgroundImage: isListening
+                        ? `url(${song.album_art_url})`
+                        : "none",
+                    backgroundSize: "cover",
+                    backgroundPosition: "center",
+                    position: "relative",
+                }}
+            >
+                {!isListening && (
+                    <div
+                        style={{
+                            position: "absolute",
+                            inset: 0,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            color: textColor,
+                            opacity: 0.4,
+                            fontSize: 24,
+                        }}
+                    >
+                        ♫
+                    </div>
+                )}
+            </div>
+
+            <div
+                style={{
+                    flex: 1,
+                    minWidth: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                }}
+            >
+                <div
+                    style={{
+                        fontSize: 10,
+                        textTransform: "uppercase",
+                        letterSpacing: 1.2,
+                        color: mutedColor,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                    }}
+                >
+                    <span
+                        style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: "50%",
+                            background: isListening ? accentColor : mutedColor,
+                            display: "inline-block",
+                            boxShadow: isListening
+                                ? `0 0 8px ${accentColor}`
+                                : "none",
+                        }}
+                    />
+                    {isListening
+                        ? `Now Playing · ${Math.round(clampedBpm)} BPM`
+                        : "Not Listening"}
+                </div>
+
+                <div
+                    style={{
+                        fontSize: 14,
+                        fontWeight: 600,
+                        color: textColor,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                    }}
+                >
+                    {isListening ? song.song : "Silence"}
+                </div>
+
+                <div
+                    style={{
+                        fontSize: 12,
+                        color: mutedColor,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                    }}
+                >
+                    {isListening ? song.artist : "—"}
+                </div>
+
+                {/* Bars */}
+                <div
+                    style={{
+                        display: "flex",
+                        alignItems: "flex-end",
+                        gap: 2,
+                        height: 18,
+                        marginTop: 2,
+                    }}
+                >
+                    {Array.from({ length: barCount }).map((_, i) => (
+                        <div
+                            key={i}
+                            style={{
+                                flex: 1,
+                                background: isListening
+                                    ? accentColor
+                                    : mutedColor,
+                                opacity: isListening ? 1 : 0.3,
+                                borderRadius: 1,
+                                animation: isListening
+                                    ? `sp-bar-${i % 5} ${barAnimDuration}s ease-in-out ${
+                                          ((i * 0.11) % 1) * barAnimDuration
+                                      }s infinite alternate`
+                                    : "none",
+                                height: isListening ? "100%" : "30%",
+                                transformOrigin: "bottom",
+                            }}
+                        />
+                    ))}
+                </div>
+
+                {isListening && (
+                    <div style={{ marginTop: 4 }}>
+                        <div
+                            style={{
+                                height: 3,
+                                background: mutedColor,
+                                borderRadius: 2,
+                                overflow: "hidden",
+                                opacity: 0.4,
+                            }}
+                        >
+                            <div
+                                style={{
+                                    height: "100%",
+                                    width: `${progress}%`,
+                                    background: accentColor,
+                                    transition: "width 0.5s linear",
+                                }}
+                            />
+                        </div>
+                        <div
+                            style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                fontSize: 10,
+                                color: mutedColor,
+                                marginTop: 3,
+                                fontVariantNumeric: "tabular-nums",
+                            }}
+                        >
+                            <span>{fmt(elapsed)}</span>
+                            <span>{fmt(total)}</span>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            <style>{`
+                @keyframes sp-bar-0 { 0% { height: 15%; } 100% { height: 95%; } }
+                @keyframes sp-bar-1 { 0% { height: 65%; } 100% { height: 25%; } }
+                @keyframes sp-bar-2 { 0% { height: 35%; } 100% { height: 100%; } }
+                @keyframes sp-bar-3 { 0% { height: 85%; } 100% { height: 35%; } }
+                @keyframes sp-bar-4 { 0% { height: 25%; } 100% { height: 75%; } }
+            `}</style>
+        </div>
+    )
+}
+
+addPropertyControls(SpotifyNowPlaying, {
+    discordId: {
+        type: ControlType.String,
+        title: "Discord ID",
+        defaultValue: "",
+        placeholder: "Your Discord user ID",
+    },
+    accentColor: {
+        type: ControlType.Color,
+        title: "Accent",
+        defaultValue: "#1DB954",
+    },
+    backgroundColor: {
+        type: ControlType.Color,
+        title: "Background",
+        defaultValue: "#18181B",
+    },
+    textColor: {
+        type: ControlType.Color,
+        title: "Text",
+        defaultValue: "#FAFAFA",
+    },
+    mutedColor: {
+        type: ControlType.Color,
+        title: "Muted",
+        defaultValue: "#52525B",
+    },
+    barCount: {
+        type: ControlType.Number,
+        title: "Bars",
+        defaultValue: 24,
+        min: 8,
+        max: 60,
+        step: 1,
+    },
+})
