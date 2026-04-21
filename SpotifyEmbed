@@ -375,4 +375,3 @@ addPropertyControls(SpotifyNowPlaying, {
         step: 1,
     },
 })
-
