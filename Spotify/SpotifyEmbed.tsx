@@ -2,150 +2,103 @@ import { useEffect, useState, useRef } from "react"
 import { addPropertyControls, ControlType } from "framer"
 
 /**
- * SpotifyNowPlaying — BPM-reactive edition
- * Lanyard (presence) + Deezer (BPM lookup). Free, no backend.
+ * SpotifyNowPlaying — direct Spotify API via Cloudflare Worker
+ * Real BPM, energy, and valence reactive.
  *
  * @framerSupportedLayoutWidth any
  * @framerSupportedLayoutHeight any
  */
 export default function SpotifyNowPlaying(props) {
     const {
-        discordId,
+        workerUrl,
         accentColor,
         backgroundColor,
         textColor,
         mutedColor,
         barCount,
+        pollInterval,
     } = props
 
     const [data, setData] = useState(null)
     const [progress, setProgress] = useState(0)
-    const [bpm, setBpm] = useState(110) // sensible default
-    const wsRef = useRef(null)
-    const heartbeatRef = useRef(null)
-    const lastTrackIdRef = useRef(null)
+    const progressBaseRef = useRef({ serverProgress: 0, fetchedAt: 0 })
 
-    // ---- Lanyard WebSocket ----
+    // ---- Poll the Worker ----
     useEffect(() => {
-        if (!discordId) return
+        if (!workerUrl) return
 
-        const connect = () => {
-            const ws = new WebSocket("wss://api.lanyard.rest/socket")
-            wsRef.current = ws
+        let cancelled = false
 
-            ws.onmessage = (event) => {
-                const msg = JSON.parse(event.data)
-                if (msg.op === 1) {
-                    heartbeatRef.current = setInterval(() => {
-                        ws.send(JSON.stringify({ op: 3 }))
-                    }, msg.d.heartbeat_interval)
-                    ws.send(
-                        JSON.stringify({
-                            op: 2,
-                            d: { subscribe_to_id: discordId },
-                        })
-                    )
+        const poll = async () => {
+            try {
+                const res = await fetch(workerUrl, { cache: "no-store" })
+                const json = await res.json()
+                if (cancelled) return
+                setData(json)
+                if (json.is_playing && typeof json.progress_ms === "number") {
+                    progressBaseRef.current = {
+                        serverProgress: json.progress_ms,
+                        fetchedAt: Date.now(),
+                    }
                 }
-                if (msg.op === 0) setData(msg.d)
-            }
-
-            ws.onclose = () => {
-                if (heartbeatRef.current) clearInterval(heartbeatRef.current)
-                setTimeout(connect, 3000)
+            } catch (err) {
+                console.error("[Spotify] poll failed:", err)
             }
         }
-        connect()
 
+        poll()
+        const interval = setInterval(poll, pollInterval * 1000)
         return () => {
-            if (heartbeatRef.current) clearInterval(heartbeatRef.current)
-            if (wsRef.current) wsRef.current.close()
+            cancelled = true
+            clearInterval(interval)
         }
-    }, [discordId])
+    }, [workerUrl, pollInterval])
 
-    // ---- Deezer BPM lookup (runs when song changes) ----
-    // ---- Deezer BPM lookup ----
+    // ---- Local progress ticker (interpolates between polls) ----
     useEffect(() => {
-        const song = data?.spotify
-        if (!song) return
-
-        const trackId = song.track_id
-        if (trackId === lastTrackIdRef.current) return
-        lastTrackIdRef.current = trackId
-
-        const clean = (s) =>
-            s
-                .replace(/\(.*?\)/g, "")
-                .replace(/\[.*?\]/g, "")
-                .replace(/feat\.?.*/i, "")
-                .replace(/ft\.?.*/i, "")
-                .replace(/["']/g, "")
-                .trim()
-
-        const artist = clean(song.artist.split(";")[0])
-        const title = clean(song.song)
-        const query = `artist:"${artist}" track:"${title}"`
-
-        // ⬇️ REPLACE THIS with your own Cloudflare Worker URL
-        const proxyBase = "https://deezer-proxy.domkegeorg2017.workers.dev/"
-        const url = `${proxyBase}/?q=${encodeURIComponent(query)}`
-
-        console.log("[BPM] searching:", { artist, title })
-
-        fetch(url)
-            .then((r) => r.json())
-            .then((json) => {
-                const match = json?.data?.[0]
-                console.log("[BPM] match:", match)
-                if (match?.bpm && match.bpm > 0) {
-                    setBpm(match.bpm)
-                } else {
-                    setBpm(110)
-                }
-            })
-            .catch((err) => {
-                console.error("[BPM] fetch failed:", err)
-                setBpm(110)
-            })
-    }, [data])
-
-    // ---- Progress ticker ----
-    useEffect(() => {
-        if (!data?.listening_to_spotify || !data?.spotify) {
+        if (!data?.is_playing) {
             setProgress(0)
             return
         }
-        const { start, end } = data.spotify.timestamps
         const tick = () => {
-            const now = Date.now()
+            const { serverProgress, fetchedAt } = progressBaseRef.current
+            const elapsed = Date.now() - fetchedAt
+            const currentMs = serverProgress + elapsed
             const pct = Math.min(
                 100,
-                Math.max(0, ((now - start) / (end - start)) * 100)
+                Math.max(0, (currentMs / data.duration_ms) * 100)
             )
             setProgress(pct)
         }
         tick()
-        const interval = setInterval(tick, 500)
-        return () => clearInterval(interval)
+        const id = setInterval(tick, 500)
+        return () => clearInterval(id)
     }, [data])
 
-    const isListening = data?.listening_to_spotify && data?.spotify
-    const song = data?.spotify
+    const isPlaying = data?.is_playing
 
     const fmt = (ms) => {
         const s = Math.floor(ms / 1000)
         return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
     }
-    const elapsed = isListening
-        ? Math.max(0, Date.now() - song.timestamps.start)
-        : 0
-    const total = isListening ? song.timestamps.end - song.timestamps.start : 0
 
-    // ---- Animation math ----
-    // One beat = 60/bpm seconds. Bars animate at half that (= eighth notes feel).
-    // Clamp to a sane range so extreme BPMs don't break the look.
-    const clampedBpm = Math.max(60, Math.min(200, bpm))
-    const beatDuration = 60 / clampedBpm // seconds per beat
+    // Current interpolated elapsed time
+    const elapsedMs = isPlaying
+        ? progressBaseRef.current.serverProgress +
+          (Date.now() - progressBaseRef.current.fetchedAt)
+        : 0
+
+    // ---- Animation math (driven by real audio features) ----
+    const bpm = data?.bpm ?? 0
+    const energy = data?.energy ?? 0.5
+    const clampedBpm = bpm > 0 ? Math.max(60, Math.min(200, bpm)) : 110
+    const beatDuration = 60 / clampedBpm
     const barAnimDuration = beatDuration / 2 // eighth notes
+
+    // Energy shapes the bar height range.
+    // Low energy (0.2): bars stay short (20-45%). High energy (0.9): bars swing wide (10-100%).
+    const minH = Math.round(25 - energy * 15) // 10-25%
+    const maxH = Math.round(45 + energy * 55) // 45-100%
 
     return (
         <div
@@ -164,6 +117,7 @@ export default function SpotifyNowPlaying(props) {
                 overflow: "hidden",
             }}
         >
+            {/* Album art */}
             <div
                 style={{
                     width: 64,
@@ -171,15 +125,16 @@ export default function SpotifyNowPlaying(props) {
                     flexShrink: 0,
                     borderRadius: 8,
                     background: mutedColor,
-                    backgroundImage: isListening
-                        ? `url(${song.album_art_url})`
-                        : "none",
+                    backgroundImage:
+                        isPlaying && data.album_art_url
+                            ? `url(${data.album_art_url})`
+                            : "none",
                     backgroundSize: "cover",
                     backgroundPosition: "center",
                     position: "relative",
                 }}
             >
-                {!isListening && (
+                {!isPlaying && (
                     <div
                         style={{
                             position: "absolute",
@@ -197,6 +152,7 @@ export default function SpotifyNowPlaying(props) {
                 )}
             </div>
 
+            {/* Text + bars + progress */}
             <div
                 style={{
                     flex: 1,
@@ -206,6 +162,7 @@ export default function SpotifyNowPlaying(props) {
                     gap: 6,
                 }}
             >
+                {/* Status line */}
                 <div
                     style={{
                         fontSize: 10,
@@ -222,18 +179,19 @@ export default function SpotifyNowPlaying(props) {
                             width: 6,
                             height: 6,
                             borderRadius: "50%",
-                            background: isListening ? accentColor : mutedColor,
+                            background: isPlaying ? accentColor : mutedColor,
                             display: "inline-block",
-                            boxShadow: isListening
+                            boxShadow: isPlaying
                                 ? `0 0 8px ${accentColor}`
                                 : "none",
                         }}
                     />
-                    {isListening
+                    {isPlaying
                         ? `Now Playing · ${Math.round(clampedBpm)} BPM`
                         : "Not Listening"}
                 </div>
 
+                {/* Song */}
                 <div
                     style={{
                         fontSize: 14,
@@ -244,9 +202,10 @@ export default function SpotifyNowPlaying(props) {
                         textOverflow: "ellipsis",
                     }}
                 >
-                    {isListening ? song.song : "Silence"}
+                    {isPlaying ? data.song : "Silence"}
                 </div>
 
+                {/* Artist */}
                 <div
                     style={{
                         fontSize: 12,
@@ -256,7 +215,7 @@ export default function SpotifyNowPlaying(props) {
                         textOverflow: "ellipsis",
                     }}
                 >
-                    {isListening ? song.artist : "—"}
+                    {isPlaying ? data.artist : "—"}
                 </div>
 
                 {/* Bars */}
@@ -274,24 +233,25 @@ export default function SpotifyNowPlaying(props) {
                             key={i}
                             style={{
                                 flex: 1,
-                                background: isListening
+                                background: isPlaying
                                     ? accentColor
                                     : mutedColor,
-                                opacity: isListening ? 1 : 0.3,
+                                opacity: isPlaying ? 1 : 0.3,
                                 borderRadius: 1,
-                                animation: isListening
+                                animation: isPlaying
                                     ? `sp-bar-${i % 5} ${barAnimDuration}s ease-in-out ${
                                           ((i * 0.11) % 1) * barAnimDuration
                                       }s infinite alternate`
                                     : "none",
-                                height: isListening ? "100%" : "30%",
+                                height: isPlaying ? "100%" : "30%",
                                 transformOrigin: "bottom",
                             }}
                         />
                     ))}
                 </div>
 
-                {isListening && (
+                {/* Progress */}
+                {isPlaying && (
                     <div style={{ marginTop: 4 }}>
                         <div
                             style={{
@@ -321,30 +281,39 @@ export default function SpotifyNowPlaying(props) {
                                 fontVariantNumeric: "tabular-nums",
                             }}
                         >
-                            <span>{fmt(elapsed)}</span>
-                            <span>{fmt(total)}</span>
+                            <span>{fmt(elapsedMs)}</span>
+                            <span>{fmt(data.duration_ms)}</span>
                         </div>
                     </div>
                 )}
             </div>
 
+            {/* Keyframes use the computed minH/maxH from energy */}
             <style>{`
-                @keyframes sp-bar-0 { 0% { height: 15%; } 100% { height: 95%; } }
-                @keyframes sp-bar-1 { 0% { height: 65%; } 100% { height: 25%; } }
-                @keyframes sp-bar-2 { 0% { height: 35%; } 100% { height: 100%; } }
-                @keyframes sp-bar-3 { 0% { height: 85%; } 100% { height: 35%; } }
-                @keyframes sp-bar-4 { 0% { height: 25%; } 100% { height: 75%; } }
+                @keyframes sp-bar-0 { 0% { height: ${minH}%; } 100% { height: ${maxH}%; } }
+                @keyframes sp-bar-1 { 0% { height: ${maxH - 10}%; } 100% { height: ${minH + 10}%; } }
+                @keyframes sp-bar-2 { 0% { height: ${minH + 5}%; } 100% { height: ${maxH}%; } }
+                @keyframes sp-bar-3 { 0% { height: ${maxH - 5}%; } 100% { height: ${minH + 15}%; } }
+                @keyframes sp-bar-4 { 0% { height: ${minH + 10}%; } 100% { height: ${maxH - 15}%; } }
             `}</style>
         </div>
     )
 }
 
 addPropertyControls(SpotifyNowPlaying, {
-    discordId: {
+    workerUrl: {
         type: ControlType.String,
-        title: "Discord ID",
+        title: "Worker URL",
         defaultValue: "",
-        placeholder: "Your Discord user ID",
+        placeholder: "https://deezer-proxy.xxx.workers.dev",
+    },
+    pollInterval: {
+        type: ControlType.Number,
+        title: "Poll (sec)",
+        defaultValue: 10,
+        min: 5,
+        max: 60,
+        step: 1,
     },
     accentColor: {
         type: ControlType.Color,
