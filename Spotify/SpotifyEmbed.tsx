@@ -2,16 +2,17 @@ import { useEffect, useState, useRef } from "react"
 import { addPropertyControls, ControlType } from "framer"
 
 /**
- * SpotifyNowPlaying — Perlin-noise driven waveform
+ * SpotifyNowPlaying — Dynamic Island w/ collapsing waveform
  *
  * ========== TUNING GUIDE ==========
- * Framer sidebar (no code edit):
- *   Collapsed/Expanded W/H, Bars, Album Accent, colors
+ * Framer sidebar:
+ *   collapsedHeight, collapsedPlayingWidth, collapsedIdleWidth,
+ *   maxExpandedWidth, Bars, Album Accent, colors
  *
  * In-code TUNE: constants (search file):
- *   innerPadding, albumBorderRadius, barGap, textGap
- *   expansionDuration, hoverFadeDuration
- *   spatialFreq, temporalFreq, envelopeSigma, swingAmount
+ *   outerPaddingX/Y, albumTextGap, textGap, barGap,
+ *   expansionDuration (master timing), hoverFadeDuration,
+ *   spatialFreq, swingAmount, envelopeSigma
  * ===================================
  */
 export default function SpotifyNowPlaying(props) {
@@ -24,10 +25,10 @@ export default function SpotifyNowPlaying(props) {
         mutedColor,
         barCount,
         pollInterval,
-        collapsedWidth,
+        collapsedPlayingWidth,
+        collapsedIdleWidth,
         collapsedHeight,
-        expandedWidth,
-        expandedHeight,
+        maxExpandedWidth,
     } = props
 
     const [data, setData] = useState(null)
@@ -36,9 +37,6 @@ export default function SpotifyNowPlaying(props) {
     const [extractedColor, setExtractedColor] = useState(null)
     const progressBaseRef = useRef({ serverProgress: 0, fetchedAt: 0 })
     const lastArtUrlRef = useRef(null)
-
-    // Refs to each bar DOM node — so we can animate them directly,
-    // bypassing React's render cycle for the waveform.
     const barRefs = useRef([])
     const rafRef = useRef(null)
 
@@ -46,7 +44,6 @@ export default function SpotifyNowPlaying(props) {
     useEffect(() => {
         if (!workerUrl) return
         let cancelled = false
-
         const poll = async () => {
             try {
                 const res = await fetch(workerUrl, { cache: "no-store" })
@@ -63,7 +60,6 @@ export default function SpotifyNowPlaying(props) {
                 console.error("[Spotify] poll failed:", err)
             }
         }
-
         poll()
         const interval = setInterval(poll, pollInterval * 1000)
         return () => {
@@ -93,7 +89,7 @@ export default function SpotifyNowPlaying(props) {
         return () => clearInterval(id)
     }, [data])
 
-    // ---- Album color extraction (unchanged from before) ----
+    // ---- Album color extraction ----
     useEffect(() => {
         if (!useAlbumColor) {
             setExtractedColor(null)
@@ -122,19 +118,17 @@ export default function SpotifyNowPlaying(props) {
                 let bestScore = -1
 
                 for (let i = 0; i < pixels.length; i += 4) {
-                    const r = pixels[i]
-                    const g = pixels[i + 1]
-                    const b = pixels[i + 2]
+                    const r = pixels[i],
+                        g = pixels[i + 1],
+                        b = pixels[i + 2]
                     const a = pixels[i + 3]
                     if (a < 200) continue
-
                     const max = Math.max(r, g, b)
                     const min = Math.min(r, g, b)
                     const lum = (max + min) / 2 / 255
                     const sat = max === 0 ? 0 : (max - min) / max
                     const lumFactor = 1 - Math.abs(lum - 0.55) * 1.5
                     const score = sat * Math.max(lumFactor, 0.1)
-
                     if (score > bestScore) {
                         bestScore = score
                         bestR = r
@@ -142,7 +136,6 @@ export default function SpotifyNowPlaying(props) {
                         bestB = b
                     }
                 }
-
                 const boost = (c) => Math.min(255, Math.round(c * 1.1))
                 setExtractedColor(
                     `rgb(${boost(bestR)}, ${boost(bestG)}, ${boost(bestB)})`
@@ -168,7 +161,6 @@ export default function SpotifyNowPlaying(props) {
     const accent =
         useAlbumColor && extractedColor ? extractedColor : accentColorProp
 
-    // ---- Hash for per-song parameter variation ----
     const hash = (str) => {
         let h = 0
         for (let i = 0; i < (str?.length ?? 0); i++) {
@@ -181,32 +173,32 @@ export default function SpotifyNowPlaying(props) {
     const realBpm = data?.bpm > 0 ? data.bpm : null
     const effectiveBpm = realBpm ?? pseudoBpm
 
-    // ---- TUNE: spacing and motion parameters ----
+    // ---- TUNE: timing and spacing ----
+    const expansionDuration = 0.8 // master timing in seconds
+    const hoverFadeDuration = 0.5
+
     const innerPadding = 6
+    const outerPaddingX = 14
+    const outerPaddingY = 14
     const albumBorderRadius = 6
     const barGap = 2
-    const textGap = 2
-    const expansionDuration = 0.4
-    const hoverFadeDuration = 0.3
+    const albumTextGap = 12
+    const textGap = 3
+    const progressBarHeight = 3
 
-    // TUNE: noise parameters. These shape the look of the motion.
-    //   spatialFreq: how rapidly the noise varies across bars.
-    //     Lower (0.15) = smoother neighbor correlation, longer waves
-    //     Higher (0.4) = more chaotic, tighter ripples
-    //   temporalFreq: how fast the pattern evolves. Scaled by BPM.
-    //   envelopeSigma: width of the bell curve. Larger = wider peak.
-    //   swingAmount: how much bars can deviate from rest (0..1).
-    const spatialFreq = 0.22 + ((trackHash >> 4) % 10) / 60 // per-song 0.22–0.38
-    const temporalFreq = (effectiveBpm / 120) * 0.6 // beats-per-minute scaled
+    const spatialFreq = 0.22 + ((trackHash >> 4) % 10) / 60
+    const temporalFreq = (effectiveBpm / 120) * 0.6
     const envelopeSigma = 0.42
     const swingAmount = 1.0
-    // ------------------------------------------------
+
+    // Shared easing curve — used everywhere for consistency
+    const easing = "cubic-bezier(0.32, 0.72, 0, 1)"
+    // -------------------------------------
 
     const albumSize = collapsedHeight - innerPadding * 2
     const waveRowHeight = collapsedHeight - innerPadding * 2
     const center = (barCount - 1) / 2
 
-    // Resting (idle) height per bar — the bell-curve shape
     const envelopeAt = (i) => {
         const dist = Math.abs(i - center) / center
         return Math.exp(-(dist * dist) / (2 * envelopeSigma * envelopeSigma))
@@ -215,30 +207,25 @@ export default function SpotifyNowPlaying(props) {
     // ---- Animation loop ----
     useEffect(() => {
         if (!isPlaying) {
-            // When paused, set bars to their rest height and stop the loop
             if (rafRef.current) cancelAnimationFrame(rafRef.current)
             barRefs.current.forEach((el, i) => {
                 if (!el) return
                 const env = envelopeAt(i)
-                const restHeight = waveRowHeight * (0.15 + env * 0.35)
+                const restHeight = waveRowHeight * (0.08 + env * 0.14)
                 el.style.height = `${restHeight}px`
             })
             return
         }
 
-        // Perlin-like 1D noise with per-song seed
-        // (hashed gradients give different motion signatures per song)
         const seed = trackHash >>> 0
         const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10)
         const lerp = (a, b, t) => a + t * (b - a)
         const grad = (hashVal, x) => {
-            // Map hash to one of a few gradients, scale by x
             const h = hashVal & 15
-            const g = 1 + (h & 7) // 1..8
+            const g = 1 + (h & 7)
             return (h & 8 ? -g : g) * x
         }
         const hashAt = (i) => {
-            // Simple integer hash seeded by trackHash
             let x = (i + seed) | 0
             x = x ^ 61 ^ (x >>> 16)
             x = (x + (x << 3)) | 0
@@ -253,7 +240,6 @@ export default function SpotifyNowPlaying(props) {
             const t = fade(x - x0)
             const n0 = grad(hashAt(x0), x - x0)
             const n1 = grad(hashAt(x1), x - x1)
-            // Normalize roughly to [-1, 1]
             return lerp(n0, n1, t) / 8
         }
 
@@ -261,42 +247,29 @@ export default function SpotifyNowPlaying(props) {
 
         const frame = () => {
             const now = performance.now()
-            const t = (now - startTime) / 1000 // seconds
+            const t = (now - startTime) / 1000
             const timeOffset = t * temporalFreq
 
             for (let i = 0; i < barCount; i++) {
                 const el = barRefs.current[i]
                 if (!el) continue
 
-                // Sample noise at this bar's spatial position + current time offset
                 const n = noise1D(i * spatialFreq + timeOffset)
-                // Map from [-1, 1] to [0, 1]
                 const nNormalized = (n + 1) / 2
-
-                // Apply the envelope — middle bars have full swing, edges barely move
                 const env = envelopeAt(i)
                 const minH = waveRowHeight * 0.1
                 const maxH = waveRowHeight * 1.0
 
-                // Rest height — minimal, bell-curve shaped.
-                // Edge bars rest at ~8%, center bars rest at ~22%.
                 const restFactor = 0.08 + env * 0.14
-                // Swing range — how much headroom this bar has above its rest.
-                // Edge bars: very little (env near 0 = no swing).
-                // Center bars: can reach the full max.
                 const swingRange = env * swingAmount
-                // nNormalized is 0..1 from the noise, so swing adds 0 to swingRange.
                 const factor = restFactor + swingRange * nNormalized
 
                 const height = minH + (maxH - minH) * Math.min(1, factor)
                 el.style.height = `${height}px`
             }
-
             rafRef.current = requestAnimationFrame(frame)
         }
-
         rafRef.current = requestAnimationFrame(frame)
-
         return () => {
             if (rafRef.current) cancelAnimationFrame(rafRef.current)
         }
@@ -311,9 +284,6 @@ export default function SpotifyNowPlaying(props) {
         swingAmount,
     ])
 
-    const currentWidth = hovered ? expandedWidth : collapsedWidth
-    const currentHeight = hovered ? expandedHeight : collapsedHeight
-
     return (
         <div
             style={{
@@ -326,35 +296,55 @@ export default function SpotifyNowPlaying(props) {
             }}
         >
             <div
-                onMouseEnter={() => setHovered(true)}
+                onMouseEnter={() => isPlaying && setHovered(true)}
                 onMouseLeave={() => setHovered(false)}
                 style={{
-                    width: currentWidth,
-                    height: currentHeight,
+                    width: isPlaying ? undefined : collapsedIdleWidth,
+                    minWidth: isPlaying
+                        ? collapsedPlayingWidth
+                        : collapsedIdleWidth,
+                    maxWidth:
+                        hovered && isPlaying
+                            ? maxExpandedWidth
+                            : collapsedPlayingWidth,
+                    minHeight: collapsedHeight,
+                    maxHeight: hovered && isPlaying ? 220 : collapsedHeight,
                     background: backgroundColor,
                     borderRadius: collapsedHeight / 2,
                     position: "relative",
                     overflow: "hidden",
-                    transition: `width ${expansionDuration}s cubic-bezier(0.4, 0, 0.2, 1), height ${expansionDuration}s cubic-bezier(0.4, 0, 0.2, 1), border-radius ${expansionDuration}s cubic-bezier(0.4, 0, 0.2, 1)`,
+                    transition: [
+                        `max-width ${expansionDuration}s ${easing}`,
+                        `min-width ${expansionDuration}s ${easing}`,
+                        `max-height ${expansionDuration}s ${easing}`,
+                        `border-radius ${expansionDuration}s ${easing}`,
+                        `box-shadow ${expansionDuration}s ease`,
+                    ].join(", "),
                     fontFamily:
                         "-apple-system, BlinkMacSystemFont, 'Inter', sans-serif",
                     boxShadow: hovered
                         ? "0 10px 40px rgba(0,0,0,0.4)"
                         : "0 4px 12px rgba(0,0,0,0.25)",
+                    display: "flex",
+                    flexDirection: "column",
                 }}
             >
+                {/* Top strip */}
                 <div
                     style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        height: collapsedHeight,
-                        padding: innerPadding,
+                        minHeight: collapsedHeight,
+                        padding:
+                            hovered && isPlaying
+                                ? `${outerPaddingY}px ${outerPaddingX}px 0 ${outerPaddingX}px`
+                                : `${innerPadding}px ${outerPaddingX}px ${innerPadding}px ${outerPaddingX}px`,
                         boxSizing: "border-box",
                         display: "flex",
-                        alignItems: "center",
-                        gap: innerPadding,
+                        alignItems:
+                            hovered && isPlaying ? "flex-start" : "center",
+                        gap: albumTextGap,
+                        flexShrink: 0,
+                        transition: `padding ${expansionDuration}s ${easing}`,
+                        position: "relative",
                     }}
                 >
                     {/* Album art */}
@@ -366,7 +356,7 @@ export default function SpotifyNowPlaying(props) {
                             borderRadius: albumBorderRadius,
                             background: mutedColor,
                             backgroundImage:
-                                isPlaying && data.album_art_url
+                                isPlaying && data?.album_art_url
                                     ? `url(${data.album_art_url})`
                                     : "none",
                             backgroundSize: "cover",
@@ -392,64 +382,146 @@ export default function SpotifyNowPlaying(props) {
                         )}
                     </div>
 
-                    {/* Waveform — heights are driven by the rAF loop above */}
-                    <div
-                        style={{
-                            flex: 1,
-                            height: waveRowHeight,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: barGap,
-                            opacity: hovered ? 0 : 1,
-                            transition: `opacity ${hoverFadeDuration * 0.6}s ease`,
-                            minWidth: 0,
-                        }}
-                    >
-                        {Array.from({ length: barCount }).map((_, i) => (
-                            <div
-                                key={i}
-                                ref={(el) => (barRefs.current[i] = el)}
-                                style={{
-                                    flex: 1,
-                                    height: `${waveRowHeight * 0.3}px`, // initial before rAF kicks in
-                                    background: isPlaying ? accent : mutedColor,
-                                    opacity: isPlaying ? 1 : 0.3,
-                                    borderRadius: 1,
-                                    // Smooth the per-frame height updates visually
-                                    transition:
-                                        "height 0.08s linear, background 0.4s ease",
-                                }}
-                            />
-                        ))}
-                    </div>
-
-                    {/* Song title overlay */}
-                    <div
-                        style={{
-                            position: "absolute",
-                            top: 0,
-                            left: albumSize + innerPadding * 2,
-                            right: innerPadding,
-                            height: collapsedHeight,
-                            display: "flex",
-                            flexDirection: "column",
-                            justifyContent: "center",
-                            gap: textGap,
-                            opacity: hovered ? 1 : 0,
-                            transition: `opacity ${hoverFadeDuration}s ease ${hoverFadeDuration * 0.5}s`,
-                            pointerEvents: "none",
-                            minWidth: 0,
-                        }}
-                    >
+                    {/* Playing right side */}
+                    {isPlaying ? (
                         <div
                             style={{
-                                fontSize: 9,
-                                textTransform: "uppercase",
-                                letterSpacing: 1.4,
-                                color: mutedColor,
+                                position: "relative",
+                                flex: 1,
+                                height: waveRowHeight,
+                                minWidth: 0,
+                            }}
+                        >
+                            {/* Waveform layer — collapses into the progress bar */}
+                            <div
+                                style={{
+                                    position: "absolute",
+                                    inset: 0,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: barGap,
+                                    opacity: hovered ? 0 : 1,
+                                    transformOrigin: "center center",
+                                    // scaleY(0) collapses height to nothing,
+                                    // creating the "flatten into line" effect
+                                    transform: hovered
+                                        ? "scaleY(0.06)"
+                                        : "scaleY(1)",
+                                    transition: [
+                                        // Scale animation takes the FULL duration
+                                        // — matches the pill's expansion
+                                        `transform ${expansionDuration}s ${easing}`,
+                                        // Opacity only fades in the last ~30%
+                                        `opacity ${hoverFadeDuration}s ease ${expansionDuration * 0.5}s`,
+                                    ].join(", "),
+                                    pointerEvents: hovered ? "none" : "auto",
+                                }}
+                            >
+                                {Array.from({ length: barCount }).map(
+                                    (_, i) => (
+                                        <div
+                                            key={i}
+                                            ref={(el) =>
+                                                (barRefs.current[i] = el)
+                                            }
+                                            style={{
+                                                flex: 1,
+                                                height: `${waveRowHeight * 0.3}px`,
+                                                background: accent,
+                                                opacity: 1,
+                                                borderRadius: 1,
+                                                transition:
+                                                    "height 0.08s linear, background 0.4s ease",
+                                            }}
+                                        />
+                                    )
+                                )}
+                            </div>
+
+                            {/* Text layer — fades in with delay */}
+                            <div
+                                style={{
+                                    position: "absolute",
+                                    inset: 0,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    justifyContent: "center",
+                                    gap: textGap,
+                                    minWidth: 140,
+                                    paddingRight: innerPadding,
+                                    opacity: hovered ? 1 : 0,
+                                    transform: hovered
+                                        ? "translateY(0)"
+                                        : "translateY(4px)",
+                                    transition: [
+                                        `opacity ${hoverFadeDuration}s ease ${expansionDuration * 0.35}s`,
+                                        `transform ${hoverFadeDuration}s ${easing} ${expansionDuration * 0.35}s`,
+                                    ].join(", "),
+                                    pointerEvents: hovered ? "auto" : "none",
+                                }}
+                            >
+                                <div
+                                    style={{
+                                        fontSize: 9,
+                                        textTransform: "uppercase",
+                                        letterSpacing: 1.4,
+                                        color: mutedColor,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 5,
+                                        lineHeight: 1,
+                                    }}
+                                >
+                                    <span
+                                        style={{
+                                            width: 5,
+                                            height: 5,
+                                            borderRadius: "50%",
+                                            background: accent,
+                                            boxShadow: `0 0 6px ${accent}`,
+                                        }}
+                                    />
+                                    Now Playing
+                                </div>
+                                <div
+                                    style={{
+                                        fontSize: 13,
+                                        fontWeight: 600,
+                                        color: textColor,
+                                        whiteSpace: "nowrap",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        lineHeight: 1.2,
+                                    }}
+                                >
+                                    {data.song}
+                                </div>
+                                <div
+                                    style={{
+                                        fontSize: 11,
+                                        color: mutedColor,
+                                        whiteSpace: "nowrap",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        lineHeight: 1.2,
+                                    }}
+                                >
+                                    {data.artist}
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        <div
+                            style={{
+                                flex: 1,
                                 display: "flex",
                                 alignItems: "center",
-                                gap: 5,
+                                gap: 6,
+                                fontSize: 10,
+                                textTransform: "uppercase",
+                                letterSpacing: 1.3,
+                                color: mutedColor,
+                                paddingRight: innerPadding,
                             }}
                         >
                             <span
@@ -457,96 +529,74 @@ export default function SpotifyNowPlaying(props) {
                                     width: 5,
                                     height: 5,
                                     borderRadius: "50%",
-                                    background: isPlaying ? accent : mutedColor,
-                                    boxShadow: isPlaying
-                                        ? `0 0 6px ${accent}`
-                                        : "none",
+                                    background: mutedColor,
+                                    flexShrink: 0,
                                 }}
                             />
-                            {isPlaying ? "Now Playing" : "Not Listening"}
+                            Not Listening
                         </div>
-                        <div
-                            style={{
-                                fontSize: 13,
-                                fontWeight: 600,
-                                color: textColor,
-                                whiteSpace: "nowrap",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                lineHeight: 1.2,
-                            }}
-                        >
-                            {isPlaying ? data.song : "Silence"}
-                        </div>
-                        <div
-                            style={{
-                                fontSize: 11,
-                                color: mutedColor,
-                                whiteSpace: "nowrap",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                lineHeight: 1.2,
-                            }}
-                        >
-                            {isPlaying ? data.artist : "—"}
-                        </div>
-                    </div>
-                </div>
-
-                {/* Bottom area — progress bar + timestamps */}
-                <div
-                    style={{
-                        position: "absolute",
-                        top: collapsedHeight,
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        padding: `${innerPadding}px ${innerPadding * 2}px ${innerPadding * 2}px ${innerPadding * 2}px`,
-                        boxSizing: "border-box",
-                        display: "flex",
-                        flexDirection: "column",
-                        justifyContent: "flex-end",
-                        gap: 6,
-                        opacity: hovered ? 1 : 0,
-                        transition: `opacity ${hoverFadeDuration}s ease ${hoverFadeDuration * 0.5}s`,
-                        pointerEvents: "none",
-                    }}
-                >
-                    {isPlaying && (
-                        <>
-                            <div
-                                style={{
-                                    height: 3,
-                                    background: mutedColor,
-                                    borderRadius: 2,
-                                    overflow: "hidden",
-                                    opacity: 0.4,
-                                }}
-                            >
-                                <div
-                                    style={{
-                                        height: "100%",
-                                        width: `${progress}%`,
-                                        background: accent,
-                                        transition: "width 0.5s linear",
-                                    }}
-                                />
-                            </div>
-                            <div
-                                style={{
-                                    display: "flex",
-                                    justifyContent: "space-between",
-                                    fontSize: 10,
-                                    color: mutedColor,
-                                    fontVariantNumeric: "tabular-nums",
-                                }}
-                            >
-                                <span>{fmt(elapsedMs)}</span>
-                                <span>{fmt(data.duration_ms)}</span>
-                            </div>
-                        </>
                     )}
                 </div>
+
+                {/* Progress bar + timestamps — unfurl from below */}
+                {isPlaying && (
+                    <div
+                        style={{
+                            padding: `0 ${outerPaddingX}px ${
+                                hovered ? outerPaddingY * 0.85 : 0
+                            }px ${outerPaddingX}px`,
+                            boxSizing: "border-box",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                            marginTop: hovered ? 10 : 0,
+                            maxHeight: hovered ? 60 : 0,
+                            overflow: "hidden",
+                            transition: [
+                                `max-height ${expansionDuration}s ${easing}`,
+                                `margin-top ${expansionDuration}s ${easing}`,
+                                `padding ${expansionDuration}s ${easing}`,
+                            ].join(", "),
+                        }}
+                    >
+                        {/* Progress line — fades in AS the waveform is finishing its collapse */}
+                        <div
+                            style={{
+                                height: progressBarHeight,
+                                background: mutedColor,
+                                borderRadius: 2,
+                                overflow: "hidden",
+                                opacity: hovered ? 0.4 : 0,
+                                transition: `opacity ${hoverFadeDuration * 0.6}s ease ${expansionDuration * 0.55}s`,
+                            }}
+                        >
+                            <div
+                                style={{
+                                    height: "100%",
+                                    width: `${progress}%`,
+                                    background: accent,
+                                    transition: "width 0.5s linear",
+                                }}
+                            />
+                        </div>
+                        {/* Timestamps — fade in last */}
+                        <div
+                            style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                fontSize: 10,
+                                color: mutedColor,
+                                fontVariantNumeric: "tabular-nums",
+                                lineHeight: 1,
+                                opacity: hovered ? 1 : 0,
+                                transition: `opacity ${hoverFadeDuration}s ease ${expansionDuration * 0.65}s`,
+                            }}
+                        >
+                            <span>{fmt(elapsedMs)}</span>
+                            <span>{fmt(data.duration_ms)}</span>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     )
@@ -567,37 +617,37 @@ addPropertyControls(SpotifyNowPlaying, {
         max: 60,
         step: 1,
     },
-    collapsedWidth: {
-        type: ControlType.Number,
-        title: "Collapsed W",
-        defaultValue: 260,
-        min: 120,
-        max: 500,
-        step: 10,
-    },
     collapsedHeight: {
         type: ControlType.Number,
-        title: "Collapsed H",
+        title: "Pill Height",
         defaultValue: 40,
         min: 28,
         max: 80,
         step: 2,
     },
-    expandedWidth: {
+    collapsedPlayingWidth: {
         type: ControlType.Number,
-        title: "Expanded W",
-        defaultValue: 340,
-        min: 200,
-        max: 600,
+        title: "W (Playing)",
+        defaultValue: 260,
+        min: 120,
+        max: 500,
         step: 10,
     },
-    expandedHeight: {
+    collapsedIdleWidth: {
         type: ControlType.Number,
-        title: "Expanded H",
-        defaultValue: 110,
-        min: 60,
-        max: 200,
-        step: 4,
+        title: "W (Idle)",
+        defaultValue: 150,
+        min: 80,
+        max: 300,
+        step: 10,
+    },
+    maxExpandedWidth: {
+        type: ControlType.Number,
+        title: "Max Expanded W",
+        defaultValue: 380,
+        min: 200,
+        max: 700,
+        step: 10,
     },
     useAlbumColor: {
         type: ControlType.Boolean,
