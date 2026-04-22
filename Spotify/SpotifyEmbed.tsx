@@ -388,7 +388,8 @@ export default function SpotifyNowPlaying(props) {
                             style={{
                                 position: "relative",
                                 flex: 1,
-                                height: waveRowHeight,
+                                minHeight: waveRowHeight,
+                                height: hovered ? "auto" : waveRowHeight,
                                 minWidth: 0,
                             }}
                         >
@@ -396,7 +397,10 @@ export default function SpotifyNowPlaying(props) {
                             <div
                                 style={{
                                     position: "absolute",
-                                    inset: 0,
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
+                                    height: waveRowHeight,
                                     display: "flex",
                                     alignItems: "center",
                                     gap: barGap,
@@ -441,11 +445,15 @@ export default function SpotifyNowPlaying(props) {
                             {/* Text layer — fades in with delay */}
                             <div
                                 style={{
-                                    position: "absolute",
-                                    inset: 0,
+                                    position: hovered ? "relative" : "absolute",
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
                                     display: "flex",
                                     flexDirection: "column",
-                                    justifyContent: "center",
+                                    justifyContent: hovered
+                                        ? "flex-start"
+                                        : "center",
                                     gap: textGap,
                                     minWidth: 140,
                                     paddingRight: innerPadding,
@@ -542,32 +550,40 @@ export default function SpotifyNowPlaying(props) {
                 {isPlaying && (
                     <div
                         style={{
-                            padding: `0 ${outerPaddingX}px ${
-                                hovered ? outerPaddingY * 0.85 : 0
-                            }px ${outerPaddingX}px`,
+                            padding: `0 ${outerPaddingX}px ${hovered ? outerPaddingY * 0.85 : 0}px ${outerPaddingX}px`,
                             boxSizing: "border-box",
                             display: "flex",
                             flexDirection: "column",
                             gap: 6,
                             marginTop: hovered ? 10 : 0,
                             maxHeight: hovered ? 60 : 0,
+                            opacity: hovered ? 1 : 0,
                             overflow: "hidden",
-                            transition: [
-                                `max-height ${expansionDuration}s ${easing}`,
-                                `margin-top ${expansionDuration}s ${easing}`,
-                                `padding ${expansionDuration}s ${easing}`,
-                            ].join(", "),
+                            // Asymmetric: on hover IN, max-height expands immediately.
+                            // On hover OUT, opacity fades first, then max-height collapses with a delay.
+                            transition: hovered
+                                ? [
+                                      `max-height ${expansionDuration}s ${easing}`,
+                                      `margin-top ${expansionDuration}s ${easing}`,
+                                      `padding ${expansionDuration}s ${easing}`,
+                                      `opacity ${hoverFadeDuration * 0.6}s ease ${expansionDuration * 0.55}s`,
+                                  ].join(", ")
+                                : [
+                                      `max-height ${expansionDuration}s ${easing} 0.2s`,
+                                      `margin-top ${expansionDuration}s ${easing} 0.2s`,
+                                      `padding ${expansionDuration}s ${easing} 0.2s`,
+                                      `opacity 0.25s ease`,
+                                  ].join(", "),
                         }}
                     >
-                        {/* Progress line — fades in AS the waveform is finishing its collapse */}
+                        {/* Progress line — parent container controls opacity */}
                         <div
                             style={{
                                 height: progressBarHeight,
                                 background: mutedColor,
                                 borderRadius: 2,
                                 overflow: "hidden",
-                                opacity: hovered ? 0.4 : 0,
-                                transition: `opacity ${hoverFadeDuration * 0.6}s ease ${expansionDuration * 0.55}s`,
+                                opacity: 0.4,
                             }}
                         >
                             <div
@@ -579,7 +595,7 @@ export default function SpotifyNowPlaying(props) {
                                 }}
                             />
                         </div>
-                        {/* Timestamps — fade in last */}
+                        {/* Timestamps — parent container controls opacity */}
                         <div
                             style={{
                                 display: "flex",
@@ -588,8 +604,6 @@ export default function SpotifyNowPlaying(props) {
                                 color: mutedColor,
                                 fontVariantNumeric: "tabular-nums",
                                 lineHeight: 1,
-                                opacity: hovered ? 1 : 0,
-                                transition: `opacity ${hoverFadeDuration}s ease ${expansionDuration * 0.65}s`,
                             }}
                         >
                             <span>{fmt(elapsedMs)}</span>
