@@ -2,8 +2,8 @@ import { useEffect, useState, useRef } from "react"
 import { addPropertyControls, ControlType } from "framer"
 
 /**
- * SpotifyNowPlaying — direct Spotify API via Cloudflare Worker
- * Real BPM, energy, and valence reactive.
+ * SpotifyNowPlaying — Spotify API via Cloudflare Worker
+ * Deterministic per-song animation (tight, rhythmic, consistent).
  *
  * @framerSupportedLayoutWidth any
  * @framerSupportedLayoutHeight any
@@ -23,10 +23,8 @@ export default function SpotifyNowPlaying(props) {
     const [progress, setProgress] = useState(0)
     const progressBaseRef = useRef({ serverProgress: 0, fetchedAt: 0 })
 
-    // ---- Poll the Worker ----
     useEffect(() => {
         if (!workerUrl) return
-
         let cancelled = false
 
         const poll = async () => {
@@ -54,7 +52,6 @@ export default function SpotifyNowPlaying(props) {
         }
     }, [workerUrl, pollInterval])
 
-    // ---- Local progress ticker (interpolates between polls) ----
     useEffect(() => {
         if (!data?.is_playing) {
             setProgress(0)
@@ -76,29 +73,40 @@ export default function SpotifyNowPlaying(props) {
     }, [data])
 
     const isPlaying = data?.is_playing
-
     const fmt = (ms) => {
         const s = Math.floor(ms / 1000)
         return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
     }
-
-    // Current interpolated elapsed time
     const elapsedMs = isPlaying
         ? progressBaseRef.current.serverProgress +
           (Date.now() - progressBaseRef.current.fetchedAt)
         : 0
 
-    // ---- Animation math (driven by real audio features) ----
-    const bpm = data?.bpm ?? 0
-    const energy = data?.energy ?? 0.5
-    const clampedBpm = bpm > 0 ? Math.max(60, Math.min(200, bpm)) : 110
-    const beatDuration = 60 / clampedBpm
+    // ---- Deterministic animation from track ID ----
+    // Simple hash: each character adds to a running integer
+    const hash = (str) => {
+        let h = 0
+        for (let i = 0; i < (str?.length ?? 0); i++) {
+            h = (h * 31 + str.charCodeAt(i)) >>> 0
+        }
+        return h
+    }
+
+    const trackHash = hash(data?.track_id ?? "")
+
+    // Derive BPM-like speed: between 85 and 155 based on hash
+    const pseudoBpm = 85 + (trackHash % 70)
+    // Derive energy (affects bar height swing): between 0.4 and 0.95
+    const pseudoEnergy = 0.4 + ((trackHash >> 8) % 100) / 180
+    // If we *did* get a real BPM from backend someday, use it instead
+    const realBpm = data?.bpm > 0 ? data.bpm : null
+    const effectiveBpm = realBpm ?? pseudoBpm
+
+    const beatDuration = 60 / effectiveBpm
     const barAnimDuration = beatDuration / 2 // eighth notes
 
-    // Energy shapes the bar height range.
-    // Low energy (0.2): bars stay short (20-45%). High energy (0.9): bars swing wide (10-100%).
-    const minH = Math.round(25 - energy * 15) // 10-25%
-    const maxH = Math.round(45 + energy * 55) // 45-100%
+    const minH = Math.round(25 - pseudoEnergy * 15)
+    const maxH = Math.round(45 + pseudoEnergy * 55)
 
     return (
         <div
@@ -117,7 +125,6 @@ export default function SpotifyNowPlaying(props) {
                 overflow: "hidden",
             }}
         >
-            {/* Album art */}
             <div
                 style={{
                     width: 64,
@@ -152,7 +159,6 @@ export default function SpotifyNowPlaying(props) {
                 )}
             </div>
 
-            {/* Text + bars + progress */}
             <div
                 style={{
                     flex: 1,
@@ -162,7 +168,6 @@ export default function SpotifyNowPlaying(props) {
                     gap: 6,
                 }}
             >
-                {/* Status line */}
                 <div
                     style={{
                         fontSize: 10,
@@ -186,12 +191,9 @@ export default function SpotifyNowPlaying(props) {
                                 : "none",
                         }}
                     />
-                    {isPlaying
-                        ? `Now Playing · ${Math.round(clampedBpm)} BPM`
-                        : "Not Listening"}
+                    {isPlaying ? "Now Playing" : "Not Listening"}
                 </div>
 
-                {/* Song */}
                 <div
                     style={{
                         fontSize: 14,
@@ -205,7 +207,6 @@ export default function SpotifyNowPlaying(props) {
                     {isPlaying ? data.song : "Silence"}
                 </div>
 
-                {/* Artist */}
                 <div
                     style={{
                         fontSize: 12,
@@ -218,7 +219,6 @@ export default function SpotifyNowPlaying(props) {
                     {isPlaying ? data.artist : "—"}
                 </div>
 
-                {/* Bars */}
                 <div
                     style={{
                         display: "flex",
@@ -228,29 +228,33 @@ export default function SpotifyNowPlaying(props) {
                         marginTop: 2,
                     }}
                 >
-                    {Array.from({ length: barCount }).map((_, i) => (
-                        <div
-                            key={i}
-                            style={{
-                                flex: 1,
-                                background: isPlaying
-                                    ? accentColor
-                                    : mutedColor,
-                                opacity: isPlaying ? 1 : 0.3,
-                                borderRadius: 1,
-                                animation: isPlaying
-                                    ? `sp-bar-${i % 5} ${barAnimDuration}s ease-in-out ${
-                                          ((i * 0.11) % 1) * barAnimDuration
-                                      }s infinite alternate`
-                                    : "none",
-                                height: isPlaying ? "100%" : "30%",
-                                transformOrigin: "bottom",
-                            }}
-                        />
-                    ))}
+                    {Array.from({ length: barCount }).map((_, i) => {
+                        // Use hash to give each bar its own phase offset
+                        const phase =
+                            (((trackHash + i * 97) % 100) / 100) *
+                            barAnimDuration
+                        const animIdx = (trackHash + i) % 5
+                        return (
+                            <div
+                                key={i}
+                                style={{
+                                    flex: 1,
+                                    background: isPlaying
+                                        ? accentColor
+                                        : mutedColor,
+                                    opacity: isPlaying ? 1 : 0.3,
+                                    borderRadius: 1,
+                                    animation: isPlaying
+                                        ? `sp-bar-${animIdx} ${barAnimDuration}s steps(8, end) ${phase}s infinite alternate`
+                                        : "none",
+                                    height: isPlaying ? "100%" : "30%",
+                                    transformOrigin: "bottom",
+                                }}
+                            />
+                        )
+                    })}
                 </div>
 
-                {/* Progress */}
                 {isPlaying && (
                     <div style={{ marginTop: 4 }}>
                         <div
@@ -288,7 +292,6 @@ export default function SpotifyNowPlaying(props) {
                 )}
             </div>
 
-            {/* Keyframes use the computed minH/maxH from energy */}
             <style>{`
                 @keyframes sp-bar-0 { 0% { height: ${minH}%; } 100% { height: ${maxH}%; } }
                 @keyframes sp-bar-1 { 0% { height: ${maxH - 10}%; } 100% { height: ${minH + 10}%; } }
@@ -305,7 +308,7 @@ addPropertyControls(SpotifyNowPlaying, {
         type: ControlType.String,
         title: "Worker URL",
         defaultValue: "",
-        placeholder: "https://deezer-proxy.xxx.workers.dev",
+        placeholder: "https://your-worker.workers.dev",
     },
     pollInterval: {
         type: ControlType.Number,
