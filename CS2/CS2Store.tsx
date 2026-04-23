@@ -1,6 +1,6 @@
-import { startTransition, useSyncExternalStore } from "react"
+import { forwardRef, type ComponentType, useSyncExternalStore } from "react"
 
-const WORKER_URL = "https://your-worker-name.your-subdomain.workers.dev/cs2/profile" // CHANGE ME
+const WORKER_URL = "https://cs2store.domkegeorg2017.workers.dev/cs2/profile" // CHANGE ME
 const POLL_INTERVAL_MS = 60_000
 const FALLBACK_TEXT = "—"
 
@@ -24,37 +24,22 @@ type StoreState = {
     data: CS2Data | null
     loading: boolean
     error: string | null
-    lastFetchedAt: number | null
 }
 
-type Listener = () => void
-type OverrideProps = Record<string, unknown>
-type OverrideResult = Record<string, unknown>
-
-const listeners = new Set<Listener>()
+const listeners = new Set<() => void>()
 
 let state: StoreState = {
     data: null,
     loading: false,
     error: null,
-    lastFetchedAt: null,
 }
 
 let inFlightRequest: Promise<void> | null = null
 let pollTimer: ReturnType<typeof globalThis.setInterval> | null = null
 
-function getSnapshot(): StoreState {
-    return state
-}
-
 function publish(nextState: StoreState) {
     state = nextState
-
-    startTransition(() => {
-        listeners.forEach((listener) => {
-            listener()
-        })
-    })
+    listeners.forEach((listener) => listener())
 }
 
 function updateState(patch: Partial<StoreState>) {
@@ -64,12 +49,16 @@ function updateState(patch: Partial<StoreState>) {
     })
 }
 
+function getSnapshot() {
+    return state
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null
 }
 
-function getStyle(props: OverrideProps): Record<string, unknown> {
-    return isRecord(props.style) ? props.style : {}
+function getStyle(style: unknown): Record<string, unknown> {
+    return isRecord(style) ? style : {}
 }
 
 function formatText(value: string | number | null | undefined): string {
@@ -86,14 +75,6 @@ function formatNumber(value: number | null | undefined, digits = 0): string {
     }
 
     return digits === 0 ? String(Math.round(value)) : value.toFixed(digits)
-}
-
-function getDisplayText(data: CS2Data | null, selector: (data: CS2Data) => string): string {
-    if (!data) {
-        return FALLBACK_TEXT
-    }
-
-    return selector(data)
 }
 
 async function fetchCS2Data(): Promise<void> {
@@ -136,38 +117,36 @@ async function fetchCS2Data(): Promise<void> {
                 throw new Error("Worker response shape was invalid.")
             }
 
-            const nextData: CS2Data = {
-                name: typeof payload.name === "string" ? payload.name : null,
-                profileUrl: typeof payload.profileUrl === "string" ? payload.profileUrl : null,
-                avatarUrl: typeof payload.avatarUrl === "string" ? payload.avatarUrl : null,
-                online: typeof payload.online === "boolean" ? payload.online : null,
-                premierRating: typeof payload.premierRating === "number" ? payload.premierRating : null,
-                wingmanRating: typeof payload.wingmanRating === "number" ? payload.wingmanRating : null,
-                faceitElo: typeof payload.faceitElo === "number" ? payload.faceitElo : null,
-                stats: {
-                    preaim: typeof payload.stats.preaim === "number" ? payload.stats.preaim : null,
-                    reactionTime:
-                        typeof payload.stats.reactionTime === "number" ? payload.stats.reactionTime : null,
-                    accuracy: typeof payload.stats.accuracy === "number" ? payload.stats.accuracy : null,
-                },
-                lastUpdated:
-                    typeof payload.lastUpdated === "string"
-                        ? payload.lastUpdated
-                        : new Date().toISOString(),
-            }
-
             publish({
-                data: nextData,
+                data: {
+                    name: typeof payload.name === "string" ? payload.name : null,
+                    profileUrl: typeof payload.profileUrl === "string" ? payload.profileUrl : null,
+                    avatarUrl: typeof payload.avatarUrl === "string" ? payload.avatarUrl : null,
+                    online: typeof payload.online === "boolean" ? payload.online : null,
+                    premierRating: typeof payload.premierRating === "number" ? payload.premierRating : null,
+                    wingmanRating: typeof payload.wingmanRating === "number" ? payload.wingmanRating : null,
+                    faceitElo: typeof payload.faceitElo === "number" ? payload.faceitElo : null,
+                    stats: {
+                        preaim: typeof payload.stats.preaim === "number" ? payload.stats.preaim : null,
+                        reactionTime:
+                            typeof payload.stats.reactionTime === "number"
+                                ? payload.stats.reactionTime
+                                : null,
+                        accuracy:
+                            typeof payload.stats.accuracy === "number" ? payload.stats.accuracy : null,
+                    },
+                    lastUpdated:
+                        typeof payload.lastUpdated === "string"
+                            ? payload.lastUpdated
+                            : new Date().toISOString(),
+                },
                 loading: false,
                 error: null,
-                lastFetchedAt: Date.now(),
             })
         } catch (error) {
-            const message = error instanceof Error ? error.message : "Unknown CS2 fetch error."
-
             updateState({
                 loading: false,
-                error: message,
+                error: error instanceof Error ? error.message : "Unknown CS2 fetch error.",
             })
         } finally {
             inFlightRequest = null
@@ -196,7 +175,7 @@ function startPolling() {
     }, POLL_INTERVAL_MS)
 }
 
-function subscribe(listener: Listener): () => void {
+function subscribe(listener: () => void) {
     listeners.add(listener)
 
     if (listeners.size === 1) {
@@ -212,114 +191,112 @@ function subscribe(listener: Listener): () => void {
     }
 }
 
-export function useCS2Data() {
-    const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-
-    return {
-        data: snapshot.data,
-        loading: snapshot.loading,
-        error: snapshot.error,
-    }
+function useCS2Store() {
+    return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
-function buildTextOverride(
-    props: OverrideProps,
-    value: string
-): OverrideResult {
-    return {
-        ...props,
-        text: value,
-        children: value,
-    }
+export const withPremierRating = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const text = formatNumber(data?.premierRating ?? null)
+
+        return <Component ref={ref} {...props} text={text} />
+    })
 }
 
-export function withPremierRating(props: OverrideProps): OverrideResult {
-    const { data } = useCS2Data()
-    const text = getDisplayText(data, (current) => formatNumber(current.premierRating))
+export const withProfileName = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const text = formatText(data?.name ?? null)
 
-    return buildTextOverride(props, text)
+        return <Component ref={ref} {...props} text={text} />
+    })
 }
 
-export function withProfileName(props: OverrideProps): OverrideResult {
-    const { data } = useCS2Data()
-    const text = getDisplayText(data, (current) => formatText(current.name))
+export const withProfileAvatar = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const avatarUrl = data?.avatarUrl ?? null
 
-    return buildTextOverride(props, text)
+        if (!avatarUrl) {
+            return <Component ref={ref} {...props} />
+        }
+
+        return (
+            <Component
+                ref={ref}
+                {...props}
+                image={avatarUrl}
+                src={avatarUrl}
+                style={{
+                    ...getStyle(props?.style),
+                    backgroundImage: `url("${avatarUrl}")`,
+                    backgroundPosition: "center",
+                    backgroundRepeat: "no-repeat",
+                    backgroundSize: "cover",
+                }}
+            />
+        )
+    })
 }
 
-export function withProfileAvatar(props: OverrideProps): OverrideResult {
-    const { data } = useCS2Data()
-    const avatarUrl = data?.avatarUrl ?? null
-    const style = getStyle(props)
+export const withProfileLink = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const profileUrl = data?.profileUrl ?? null
 
-    if (!avatarUrl) {
-        return props
-    }
+        if (!profileUrl) {
+            return <Component ref={ref} {...props} />
+        }
 
-    return {
-        ...props,
-        image: avatarUrl,
-        src: avatarUrl,
-        style: {
-            ...style,
-            backgroundImage: `url("${avatarUrl}")`,
-            backgroundPosition: "center",
-            backgroundRepeat: "no-repeat",
-            backgroundSize: "cover",
-        },
-    }
+        return <Component ref={ref} {...props} href={profileUrl} link={profileUrl} />
+    })
 }
 
-export function withProfileLink(props: OverrideProps): OverrideResult {
-    const { data } = useCS2Data()
-    const profileUrl = data?.profileUrl ?? null
+export const withOnlineStatus = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const online = data?.online ?? null
+        const variant = online === true ? "Online" : online === false ? "Offline" : "Unknown"
+        const backgroundColor = online === true ? "#3BB273" : online === false ? "#B3BAC5" : "#D7DCE2"
 
-    if (!profileUrl) {
-        return props
-    }
-
-    return {
-        ...props,
-        href: profileUrl,
-        link: profileUrl,
-    }
+        return (
+            <Component
+                ref={ref}
+                {...props}
+                variant={variant}
+                style={{
+                    ...getStyle(props?.style),
+                    backgroundColor,
+                }}
+            />
+        )
+    })
 }
 
-export function withOnlineStatus(props: OverrideProps): OverrideResult {
-    const { data } = useCS2Data()
-    const online = data?.online ?? null
-    const style = getStyle(props)
-    const variant = online === true ? "Online" : online === false ? "Offline" : "Unknown"
-    const backgroundColor = online === true ? "#3BB273" : online === false ? "#B3BAC5" : "#D7DCE2"
+export const withPreaim = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const text = formatNumber(data?.stats.preaim ?? null, 1)
 
-    return {
-        ...props,
-        variant,
-        "data-online": online === true,
-        style: {
-            ...style,
-            backgroundColor,
-        },
-    }
+        return <Component ref={ref} {...props} text={text} />
+    })
 }
 
-export function withPreaim(props: OverrideProps): OverrideResult {
-    const { data } = useCS2Data()
-    const text = getDisplayText(data, (current) => formatNumber(current.stats.preaim, 1))
+export const withReactionTime = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const text = formatNumber(data?.stats.reactionTime ?? null)
 
-    return buildTextOverride(props, text)
+        return <Component ref={ref} {...props} text={text} />
+    })
 }
 
-export function withReactionTime(props: OverrideProps): OverrideResult {
-    const { data } = useCS2Data()
-    const text = getDisplayText(data, (current) => formatNumber(current.stats.reactionTime))
+export const withAccuracy = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const text = formatNumber(data?.stats.accuracy ?? null, 1)
 
-    return buildTextOverride(props, text)
-}
-
-export function withAccuracy(props: OverrideProps): OverrideResult {
-    const { data } = useCS2Data()
-    const text = getDisplayText(data, (current) => formatNumber(current.stats.accuracy, 1))
-
-    return buildTextOverride(props, text)
+        return <Component ref={ref} {...props} text={text} />
+    })
 }
