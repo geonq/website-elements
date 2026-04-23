@@ -174,7 +174,9 @@ export default function SpotifyNowPlaying(props) {
     const effectiveBpm = realBpm ?? pseudoBpm
 
     // ---- TUNE: timing and spacing ----
-    const expansionDuration = 0.8 // master timing in seconds
+    const expansionDuration = 0.8 // hover IN — fast and snappy
+    const collapseDuration = 1.1 // hover OUT — slower, more deliberate
+    const exitDelay = 0.15 // head start for content to fade before shell shrinks
     const hoverFadeDuration = 0.5
 
     const innerPadding = 6
@@ -206,8 +208,13 @@ export default function SpotifyNowPlaying(props) {
 
     // ---- Animation loop: frequency-clustered Gaussian peaks ----
     useEffect(() => {
-        if (!isPlaying) {
-            if (rafRef.current) cancelAnimationFrame(rafRef.current)
+        // Halt on hover OR when not playing — reset bars to baseline so they
+        // don't "glitch" through the layout while the pill is expanding/collapsing
+        if (!isPlaying || hovered) {
+            if (rafRef.current) {
+                cancelAnimationFrame(rafRef.current)
+                rafRef.current = null
+            }
             const uniformRest = waveRowHeight * 0.08
             barRefs.current.forEach((el) => {
                 if (!el) return
@@ -357,7 +364,7 @@ export default function SpotifyNowPlaying(props) {
         return () => {
             if (rafRef.current) cancelAnimationFrame(rafRef.current)
         }
-    }, [isPlaying, trackHash, barCount, waveRowHeight, effectiveBpm])
+    }, [isPlaying, hovered, trackHash, barCount, waveRowHeight, effectiveBpm])
     return (
         <div
             style={{
@@ -387,13 +394,21 @@ export default function SpotifyNowPlaying(props) {
                     borderRadius: collapsedHeight / 2,
                     position: "relative",
                     overflow: "hidden",
-                    transition: [
-                        `max-width ${expansionDuration}s ${easing}`,
-                        `min-width ${expansionDuration}s ${easing}`,
-                        `max-height ${expansionDuration}s ${easing}`,
-                        `border-radius ${expansionDuration}s ${easing}`,
-                        `box-shadow ${expansionDuration}s ease`,
-                    ].join(", "),
+                    transition: hovered
+                        ? [
+                              `max-width ${expansionDuration}s ${easing} 0s`,
+                              `min-width ${expansionDuration}s ${easing} 0s`,
+                              `max-height ${expansionDuration}s ${easing} 0s`,
+                              `border-radius ${expansionDuration}s ${easing} 0s`,
+                              `box-shadow ${expansionDuration}s ease 0s`,
+                          ].join(", ")
+                        : [
+                              `max-width ${collapseDuration}s ${easing} ${exitDelay}s`,
+                              `min-width ${collapseDuration}s ${easing}`,
+                              `max-height ${collapseDuration}s ${easing} ${exitDelay}s`,
+                              `border-radius ${collapseDuration}s ${easing} ${exitDelay}s`,
+                              `box-shadow ${collapseDuration}s ease`,
+                          ].join(", "),
                     fontFamily:
                         "-apple-system, BlinkMacSystemFont, 'Inter', sans-serif",
                     boxShadow: hovered
@@ -485,13 +500,15 @@ export default function SpotifyNowPlaying(props) {
                                     transform: hovered
                                         ? "scaleY(0.06)"
                                         : "scaleY(1)",
-                                    transition: [
-                                        // Scale animation takes the FULL duration
-                                        // — matches the pill's expansion
-                                        `transform ${expansionDuration}s ${easing}`,
-                                        // Opacity only fades in the last ~30%
-                                        `opacity ${hoverFadeDuration}s ease ${expansionDuration * 0.5}s`,
-                                    ].join(", "),
+                                    transition: hovered
+                                        ? [
+                                              `transform ${expansionDuration}s ${easing}`,
+                                              `opacity ${hoverFadeDuration * 0.7}s ease`,
+                                          ].join(", ")
+                                        : [
+                                              `transform ${collapseDuration}s ${easing}`,
+                                              `opacity ${hoverFadeDuration * 0.7}s ease ${collapseDuration * 0.25}s`,
+                                          ].join(", "),
                                     pointerEvents: hovered ? "none" : "auto",
                                 }}
                             >
@@ -535,10 +552,15 @@ export default function SpotifyNowPlaying(props) {
                                     transform: hovered
                                         ? "translateY(0)"
                                         : "translateY(4px)",
-                                    transition: [
-                                        `opacity ${hoverFadeDuration}s ease ${expansionDuration * 0.35}s`,
-                                        `transform ${hoverFadeDuration}s ${easing} ${expansionDuration * 0.35}s`,
-                                    ].join(", "),
+                                    transition: hovered
+                                        ? [
+                                              `opacity ${hoverFadeDuration}s ease ${expansionDuration * 0.35}s`,
+                                              `transform ${hoverFadeDuration}s ${easing} ${expansionDuration * 0.35}s`,
+                                          ].join(", ")
+                                        : [
+                                              `opacity ${hoverFadeDuration * 0.5}s ease 0s`,
+                                              `transform ${hoverFadeDuration * 0.5}s ${easing} 0s`,
+                                          ].join(", "),
                                     pointerEvents: hovered ? "auto" : "none",
                                 }}
                             >
@@ -643,10 +665,10 @@ export default function SpotifyNowPlaying(props) {
                                       `opacity ${hoverFadeDuration * 0.6}s ease ${expansionDuration * 0.55}s`,
                                   ].join(", ")
                                 : [
-                                      `max-height ${expansionDuration}s ${easing} 0.2s`,
-                                      `margin-top ${expansionDuration}s ${easing} 0.2s`,
-                                      `padding ${expansionDuration}s ${easing} 0.2s`,
-                                      `opacity 0.25s ease`,
+                                      `max-height ${collapseDuration}s ${easing} ${exitDelay}s`,
+                                      `margin-top ${collapseDuration}s ${easing} ${exitDelay}s`,
+                                      `padding ${collapseDuration}s ${easing} ${exitDelay}s`,
+                                      `opacity 0.2s ease 0s`,
                                   ].join(", "),
                         }}
                     >
@@ -767,9 +789,9 @@ addPropertyControls(SpotifyNowPlaying, {
     barCount: {
         type: ControlType.Number,
         title: "Bars",
-        defaultValue: 60,
+        defaultValue: 40,
         min: 10,
-        max: 100,
+        max: 60,
         step: 1,
     },
 })
