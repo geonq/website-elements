@@ -204,129 +204,149 @@ export default function SpotifyNowPlaying(props) {
         return Math.exp(-(dist * dist) / (2 * envelopeSigma * envelopeSigma))
     }
 
-    // ---- Animation loop ----
-    // ---- Animation loop with physics + master pulse ----
+    // ---- Animation loop: frequency-clustered Gaussian peaks ----
     useEffect(() => {
         if (!isPlaying) {
             if (rafRef.current) cancelAnimationFrame(rafRef.current)
-            barRefs.current.forEach((el, i) => {
+            const uniformRest = waveRowHeight * 0.08
+            barRefs.current.forEach((el) => {
                 if (!el) return
-                const env = envelopeAt(i)
-                const restHeight = waveRowHeight * (0.08 + env * 0.14)
-                el.style.height = `${restHeight}px`
+                el.style.height = `${uniformRest}px`
             })
             return
         }
 
-        const seed = trackHash >>> 0
-
-        // --- 1D value noise (smooth, deterministic per track) ---
-        const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10)
-        const lerp = (a, b, t) => a + t * (b - a)
-        const grad = (hashVal, x) => {
-            const h = hashVal & 15
-            const g = 1 + (h & 7)
-            return (h & 8 ? -g : g) * x
-        }
-        const hashAt = (i) => {
-            let x = (i + seed) | 0
-            x = x ^ 61 ^ (x >>> 16)
-            x = (x + (x << 3)) | 0
-            x = x ^ (x >>> 4)
-            x = Math.imul(x, 0x27d4eb2d)
-            x = x ^ (x >>> 15)
-            return x >>> 0
-        }
-        const noise1D = (x) => {
-            const x0 = Math.floor(x)
-            const x1 = x0 + 1
-            const t = fade(x - x0)
-            const n0 = grad(hashAt(x0), x - x0)
-            const n1 = grad(hashAt(x1), x - x1)
-            return lerp(n0, n1, t) / 8
-        }
-
-        // --- Physics state: current height (displayed) vs target height ---
-        const currentHeights = new Float32Array(barCount)
-        const targetHeights = new Float32Array(barCount)
-        // Prime with rest heights so the first frame isn't a jump from zero
+        // --- Global Activity Mask ---
+        // Indices 0..edgeZone and (barCount-edgeZone)..end ramp from 0 → 1 via
+        // smoothstep, so the extreme edges are calm and the center is hot.
+        // Scales with barCount so you can tweak bar density later.
+        const edgeZone = Math.round(barCount * 0.18) // e.g. 11 bars per side at 60
+        const activityMask = new Float32Array(barCount)
         for (let i = 0; i < barCount; i++) {
-            const env = envelopeAt(i)
-            currentHeights[i] = waveRowHeight * (0.08 + env * 0.14)
+            let m
+            if (i < edgeZone) m = i / edgeZone
+            else if (i > barCount - 1 - edgeZone)
+                m = (barCount - 1 - i) / edgeZone
+            else m = 1
+            m = Math.max(0, Math.min(1, m))
+            activityMask[i] = m * m * (3 - 2 * m) // smoothstep easing
         }
 
-        // --- TUNE: physics constants ---
-        // Attack = how fast bars rise (higher = snappier on the beat)
-        // Decay  = how fast bars fall (lower = more "gravity", slower fall)
-        const attackSpeed = 0.35 // per-frame lerp factor on rise
-        const decaySpeed = 0.12 // per-frame lerp factor on fall
-        // Master pulse: simulates a kick drum at the track's BPM
-        const beatsPerSecond = effectiveBpm / 60
-        const pulseDepth = 0.25 // how much the pulse modulates amplitude (0–1)
-        // ------------------------------
+        // --- State arrays ---
+        const barEnergy = new Float32Array(barCount)
+        const currentHeights = new Float32Array(barCount)
+        const uniformMinH = waveRowHeight * 0.08
+        const maxH = waveRowHeight * 1.0
+        for (let i = 0; i < barCount; i++) currentHeights[i] = uniformMinH
 
+        // --- TUNE: physics + event scheduling ---
+        const heightDecayPerFrame = 0.88 // bar gravity (lower = faster fall)
+        const energyDecayPerFrame = 0.9 // how fast the spike energy bleeds off
+        const beatsPerSecond = effectiveBpm / 60
+        // Event triggers fire ~3.5x per beat with jitter, each firing a burst
+        // of 2-3 simultaneous peaks. At 128 BPM that's ~7-10 peaks/second.
+        const triggersPerBeat = 3.5
+        const burstMin = 2 // min simultaneous peaks per trigger
+        const burstMax = 3 // max simultaneous peaks per trigger
+        // -----------------------------------------
+
+        // --- Sound event spawner ---
+        // Each event = a Gaussian bump of energy centered on some bar.
+        // We pick from 3 "bands" with different center distributions, widths,
+        // and amplitude ranges, so peaks look like different instruments.
+        const centerIdx = (barCount - 1) / 2
+        const spawnEvent = (kick) => {
+            const roll = Math.random()
+            let center, sigma, amplitude
+            if (roll < 0.35) {
+                // BASS: center-biased, wide cluster (5-7 bars), strong amplitude,
+                // boosted by the kick drum
+                center = centerIdx + (Math.random() - 0.5) * barCount * 0.25
+                sigma = barCount * 0.05 + Math.random() * barCount * 0.04
+                amplitude = 0.7 + Math.random() * 0.3
+                amplitude *= 1 + kick * 0.4
+            } else if (roll < 0.75) {
+                // MID: off-center, medium cluster (3-5 bars)
+                center = centerIdx + (Math.random() - 0.5) * barCount * 0.55
+                sigma = barCount * 0.035 + Math.random() * barCount * 0.025
+                amplitude = 0.4 + Math.random() * 0.35
+            } else {
+                // HIGH: anywhere, narrow cluster (2-3 bars), sharper
+                center = edgeZone + Math.random() * (barCount - edgeZone * 2)
+                sigma = barCount * 0.02 + Math.random() * barCount * 0.02
+                amplitude = 0.3 + Math.random() * 0.3
+            }
+
+            const twoSigmaSq = 2 * sigma * sigma
+            const radius = Math.ceil(sigma * 3) // ~99% of Gaussian mass
+            const start = Math.max(0, Math.floor(center - radius))
+            const end = Math.min(barCount - 1, Math.ceil(center + radius))
+
+            for (let i = start; i <= end; i++) {
+                const d = i - center
+                const falloff = Math.exp(-(d * d) / twoSigmaSq)
+                // Multiply by the global activity mask — edges stay calm
+                // even if a peak happens to land there
+                const contrib = amplitude * falloff * activityMask[i]
+                // Take the max so overlapping events don't just average out
+                if (contrib > barEnergy[i]) barEnergy[i] = contrib
+            }
+        }
+
+        // --- Frame loop ---
         const startTime = performance.now()
         let lastFrameTime = startTime
+        let nextSpawnAt = 0
 
         const frame = () => {
             const now = performance.now()
             const t = (now - startTime) / 1000
-            // Normalize physics to 60fps so it feels the same regardless of refresh rate
             const dt = Math.min(50, now - lastFrameTime) / (1000 / 60)
             lastFrameTime = now
 
-            const timeOffset = t * temporalFreq
-
-            // --- Master pulse: sharp attack, soft decay per beat ---
-            // phase goes 0 → 1 each beat; we shape it into a "kick" envelope
+            // Master kick for bass amplitude boost
             const beatPhase = (t * beatsPerSecond) % 1
-            // Fast rise in first 10% of the beat, exponential decay after
             const kick =
                 beatPhase < 0.1
                     ? beatPhase / 0.1
                     : Math.exp(-(beatPhase - 0.1) * 4)
-            // pulseMultiplier oscillates around 1.0, boosting amplitude on the beat
-            const pulseMultiplier = 1 + kick * pulseDepth
 
-            // --- Compute target heights ---
-            for (let i = 0; i < barCount; i++) {
-                // Two noise octaves for richer flow (low freq + high freq detail)
-                const n1 = noise1D(i * spatialFreq + timeOffset)
-                const n2 =
-                    noise1D(i * spatialFreq * 2.3 + timeOffset * 1.7) * 0.4
-                const n = (n1 + n2) / 1.4
-                const nNormalized = (n + 1) / 2
-
-                // Gaussian envelope — bass in the middle, treble at edges
-                const env = envelopeAt(i)
-
-                const minH = waveRowHeight * 0.1
-                const maxH = waveRowHeight * 1.0
-
-                const restFactor = 0.08 + env * 0.14
-                const swingRange = env * swingAmount
-                const rawFactor = restFactor + swingRange * nNormalized
-
-                // Apply master pulse — center bars feel the kick more (bass)
-                const pulseInfluence =
-                    1 + (pulseMultiplier - 1) * (0.4 + env * 0.6)
-                const factor = rawFactor * pulseInfluence
-
-                targetHeights[i] = minH + (maxH - minH) * Math.min(1, factor)
+            // --- Trigger sound events on schedule ---
+            if (t >= nextSpawnAt) {
+                const burstCount =
+                    burstMin +
+                    Math.floor(Math.random() * (burstMax - burstMin + 1))
+                for (let k = 0; k < burstCount; k++) spawnEvent(kick)
+                // Schedule next trigger: baseline rate + 60-140% jitter
+                const interval = 1 / (beatsPerSecond * triggersPerBeat)
+                nextSpawnAt = t + interval * (0.6 + Math.random() * 0.8)
             }
 
-            // --- Physics smoothing: asymmetric lerp (fast rise, slow fall) ---
+            // --- Resolve bar physics: instant attack, gravity decay, no wobble ---
+            const decayK = Math.pow(heightDecayPerFrame, dt)
+            const energyK = Math.pow(energyDecayPerFrame, dt)
             for (let i = 0; i < barCount; i++) {
                 const el = barRefs.current[i]
                 if (!el) continue
 
-                const current = currentHeights[i]
-                const target = targetHeights[i]
-                const rising = target > current
-                const speed = rising ? attackSpeed : decaySpeed
-                // 1 - (1 - speed)^dt keeps the lerp framerate-independent
-                const k = 1 - Math.pow(1 - speed, dt)
-                currentHeights[i] = current + (target - current) * k
+                // Target derived purely from energy — no idle noise
+                const target =
+                    uniformMinH +
+                    (maxH - uniformMinH) * Math.min(1, barEnergy[i])
+
+                if (target >= currentHeights[i]) {
+                    // Rising: snap (instant attack)
+                    currentHeights[i] = target
+                } else {
+                    // Falling: exponential decay toward baseline (frame-rate independent)
+                    currentHeights[i] =
+                        uniformMinH + (currentHeights[i] - uniformMinH) * decayK
+                    if (currentHeights[i] < uniformMinH)
+                        currentHeights[i] = uniformMinH
+                }
+
+                // Energy bleeds off so the bar eventually settles back to rest
+                barEnergy[i] *= energyK
 
                 el.style.height = `${currentHeights[i]}px`
             }
@@ -337,17 +357,7 @@ export default function SpotifyNowPlaying(props) {
         return () => {
             if (rafRef.current) cancelAnimationFrame(rafRef.current)
         }
-    }, [
-        isPlaying,
-        trackHash,
-        barCount,
-        waveRowHeight,
-        spatialFreq,
-        temporalFreq,
-        envelopeSigma,
-        swingAmount,
-        effectiveBpm,
-    ])
+    }, [isPlaying, trackHash, barCount, waveRowHeight, effectiveBpm])
     return (
         <div
             style={{
@@ -757,9 +767,9 @@ addPropertyControls(SpotifyNowPlaying, {
     barCount: {
         type: ControlType.Number,
         title: "Bars",
-        defaultValue: 22,
+        defaultValue: 60,
         min: 10,
-        max: 60,
+        max: 100,
         step: 1,
     },
 })
