@@ -690,8 +690,8 @@ export default function SpotifyNowPlaying(props) {
                     width: shellExpanded ? expandedWidth : collapsedWidth,
                     height: shellExpanded ? expandedHeight : collapsedHeight,
                     background: backgroundColor,
-                    backdropFilter: "blur(18px) saturate(115%)",
-                    WebkitBackdropFilter: "blur(18px) saturate(115%)",
+                    backdropFilter: "blur(4px) saturate(80%)",
+                    WebkitBackdropFilter: "blur(4px) saturate(80%)",
                     borderRadius: shellExpanded
                         ? Math.max(22, collapsedHeight * 0.42)
                         : collapsedHeight / 2,
