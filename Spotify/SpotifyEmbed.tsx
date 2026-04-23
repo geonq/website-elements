@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { addPropertyControls, ControlType } from "framer"
 
 /**
@@ -11,7 +11,7 @@ import { addPropertyControls, ControlType } from "framer"
  *
  * In-code TUNE: constants (search file):
  *   outerPaddingX/Y, albumTextGap, textGap, barGap,
- *   expansionDuration (master timing), hoverFadeDuration,
+ *   shellExpandDuration, shellCollapseDuration,
  *   spatialFreq, swingAmount, envelopeSigma
  * ===================================
  */
@@ -32,23 +32,28 @@ export default function SpotifyNowPlaying(props) {
     } = props
 
     const [data, setData] = useState(null)
-    const [hovered, setHovered] = useState(false)
     const [progress, setProgress] = useState(0)
     const [extractedColor, setExtractedColor] = useState(null)
+    const [hoverPhase, setHoverPhase] = useState("collapsed")
+
     const progressBaseRef = useRef({ serverProgress: 0, fetchedAt: 0 })
     const lastArtUrlRef = useRef(null)
     const barRefs = useRef([])
     const rafRef = useRef(null)
+    const hoverTimerRef = useRef(null)
+    const measureCanvasRef = useRef(null)
 
     // ---- Poll the Worker ----
     useEffect(() => {
         if (!workerUrl) return
         let cancelled = false
+
         const poll = async () => {
             try {
                 const res = await fetch(workerUrl, { cache: "no-store" })
                 const json = await res.json()
                 if (cancelled) return
+
                 setData(json)
                 if (json.is_playing && typeof json.progress_ms === "number") {
                     progressBaseRef.current = {
@@ -60,8 +65,10 @@ export default function SpotifyNowPlaying(props) {
                 console.error("[Spotify] poll failed:", err)
             }
         }
+
         poll()
         const interval = setInterval(poll, pollInterval * 1000)
+
         return () => {
             cancelled = true
             clearInterval(interval)
@@ -74,6 +81,7 @@ export default function SpotifyNowPlaying(props) {
             setProgress(0)
             return
         }
+
         const tick = () => {
             const { serverProgress, fetchedAt } = progressBaseRef.current
             const elapsed = Date.now() - fetchedAt
@@ -84,6 +92,7 @@ export default function SpotifyNowPlaying(props) {
             )
             setProgress(pct)
         }
+
         tick()
         const id = setInterval(tick, 500)
         return () => clearInterval(id)
@@ -95,6 +104,7 @@ export default function SpotifyNowPlaying(props) {
             setExtractedColor(null)
             return
         }
+
         const url = data?.album_art_url
         if (!url || url === lastArtUrlRef.current) return
         lastArtUrlRef.current = url
@@ -107,28 +117,33 @@ export default function SpotifyNowPlaying(props) {
                 const size = 32
                 canvas.width = size
                 canvas.height = size
+
                 const ctx = canvas.getContext("2d")
                 if (!ctx) return
+
                 ctx.drawImage(img, 0, 0, size, size)
                 const { data: pixels } = ctx.getImageData(0, 0, size, size)
 
-                let bestR = 128,
-                    bestG = 128,
-                    bestB = 128
+                let bestR = 128
+                let bestG = 128
+                let bestB = 128
                 let bestScore = -1
 
                 for (let i = 0; i < pixels.length; i += 4) {
-                    const r = pixels[i],
-                        g = pixels[i + 1],
-                        b = pixels[i + 2]
+                    const r = pixels[i]
+                    const g = pixels[i + 1]
+                    const b = pixels[i + 2]
                     const a = pixels[i + 3]
+
                     if (a < 200) continue
+
                     const max = Math.max(r, g, b)
                     const min = Math.min(r, g, b)
                     const lum = (max + min) / 2 / 255
                     const sat = max === 0 ? 0 : (max - min) / max
                     const lumFactor = 1 - Math.abs(lum - 0.55) * 1.5
                     const score = sat * Math.max(lumFactor, 0.1)
+
                     if (score > bestScore) {
                         bestScore = score
                         bestR = r
@@ -136,23 +151,64 @@ export default function SpotifyNowPlaying(props) {
                         bestB = b
                     }
                 }
-                const boost = (c) => Math.min(255, Math.round(c * 1.1))
+
+                const boost = (channel) =>
+                    Math.min(255, Math.round(channel * 1.1))
+
+                const liftDarkColor = (r, g, b) => {
+                    const max = Math.max(r, g, b)
+                    const min = Math.min(r, g, b)
+                    const lightness = (max + min) / 2 / 255
+
+                    if (lightness >= 0.5) return [r, g, b]
+
+                    const mix = (0.5 - lightness) / (1 - lightness)
+                    return [r, g, b].map((channel) =>
+                        Math.round(channel + (255 - channel) * mix)
+                    )
+                }
+
+                const [liftedR, liftedG, liftedB] = liftDarkColor(
+                    boost(bestR),
+                    boost(bestG),
+                    boost(bestB)
+                )
+
                 setExtractedColor(
-                    `rgb(${boost(bestR)}, ${boost(bestG)}, ${boost(bestB)})`
+                    `rgb(${liftedR}, ${liftedG}, ${liftedB})`
                 )
             } catch (err) {
                 setExtractedColor(null)
             }
         }
+
         img.onerror = () => setExtractedColor(null)
         img.src = url
     }, [data?.album_art_url, useAlbumColor])
 
     const isPlaying = data?.is_playing
+
+    useEffect(() => {
+        if (isPlaying) return
+        if (hoverTimerRef.current) {
+            clearTimeout(hoverTimerRef.current)
+            hoverTimerRef.current = null
+        }
+        setHoverPhase("collapsed")
+    }, [isPlaying])
+
+    useEffect(() => {
+        return () => {
+            if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+            if (rafRef.current) cancelAnimationFrame(rafRef.current)
+        }
+    }, [])
+
     const fmt = (ms) => {
         const s = Math.floor(ms / 1000)
         return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
     }
+
     const elapsedMs = isPlaying
         ? progressBaseRef.current.serverProgress +
           (Date.now() - progressBaseRef.current.fetchedAt)
@@ -168,38 +224,221 @@ export default function SpotifyNowPlaying(props) {
         }
         return h
     }
+
     const trackHash = hash(data?.track_id ?? "")
     const pseudoBpm = 85 + (trackHash % 70)
     const realBpm = data?.bpm > 0 ? data.bpm : null
     const effectiveBpm = realBpm ?? pseudoBpm
 
     // ---- TUNE: timing and spacing ----
-    const expansionDuration = 0.8 // hover IN — fast and snappy
-    const collapseDuration = 1.1 // hover OUT — slower, more deliberate
-    const exitDelay = 0.15 // head start for content to fade before shell shrinks
-    const hoverFadeDuration = 0.5
+    const shellExpandDuration = 0.76
+    const shellCollapseDuration = 0.62
+    const shellCollapseDelay = 0.26
+    const waveMorphDuration = 0.42
+    const waveFadeDuration = 0.32
+    const waveReturnDelay = 0.12
+    const detailsFadeDuration = 0.34
+    const detailsEnterDelay = 0.22
+    const progressFadeDuration = 0.38
+    const progressEnterDelay = 0.34
 
     const innerPadding = 6
     const outerPaddingX = 14
     const outerPaddingY = 14
+    const expandedTopBottomPadding = 6
     const albumBorderRadius = 6
     const barGap = 2
     const albumTextGap = 12
     const textGap = 3
     const progressBarHeight = 3
+    const progressMarginTop = 6
+    const progressGap = 6
+    const progressBottomPadding = Math.round(outerPaddingY * 0.85)
 
     const spatialFreq = 0.22 + ((trackHash >> 4) % 10) / 60
     const temporalFreq = (effectiveBpm / 120) * 0.6
     const envelopeSigma = 0.42
     const swingAmount = 1.0
 
-    // Shared easing curve — used everywhere for consistency
     const easing = "cubic-bezier(0.32, 0.72, 0, 1)"
+    const fontFamily =
+        "-apple-system, BlinkMacSystemFont, 'Inter', sans-serif"
     // -------------------------------------
+
+    const clearHoverTimer = () => {
+        if (hoverTimerRef.current) {
+            clearTimeout(hoverTimerRef.current)
+            hoverTimerRef.current = null
+        }
+    }
+
+    const expandHoverCard = () => {
+        if (!isPlaying) return
+        clearHoverTimer()
+        setHoverPhase("expanding")
+        hoverTimerRef.current = setTimeout(() => {
+            setHoverPhase("expanded")
+            hoverTimerRef.current = null
+        }, Math.round((shellExpandDuration + progressEnterDelay) * 1000))
+    }
+
+    const collapseHoverCard = () => {
+        if (!isPlaying) {
+            setHoverPhase("collapsed")
+            return
+        }
+        clearHoverTimer()
+        setHoverPhase("collapsing")
+        hoverTimerRef.current = setTimeout(() => {
+            setHoverPhase("collapsed")
+            hoverTimerRef.current = null
+        }, Math.round((shellCollapseDelay + shellCollapseDuration) * 1000))
+    }
+
+    const measureTextWidth = (text, fontSize, fontWeight = 400, letterSpacing = 0) => {
+        const content = text?.trim?.() ?? ""
+        if (!content) return 0
+
+        const fallbackWidth =
+            content.length * fontSize * 0.58 +
+            Math.max(0, content.length - 1) * letterSpacing
+
+        if (typeof document === "undefined") return fallbackWidth
+
+        let canvas = measureCanvasRef.current
+        if (!canvas) {
+            canvas = document.createElement("canvas")
+            measureCanvasRef.current = canvas
+        }
+
+        const ctx = canvas.getContext("2d")
+        if (!ctx) return fallbackWidth
+
+        ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`
+        return (
+            ctx.measureText(content).width +
+            Math.max(0, content.length - 1) * letterSpacing
+        )
+    }
 
     const albumSize = collapsedHeight - innerPadding * 2
     const waveRowHeight = collapsedHeight - innerPadding * 2
     const center = (barCount - 1) / 2
+
+    const labelLineHeight = 11
+    const titleLineHeight = 16
+    const artistLineHeight = 13
+    const metadataHeight =
+        labelLineHeight + titleLineHeight + artistLineHeight + textGap * 2
+
+    const expandedTopHeight = Math.max(
+        collapsedHeight,
+        outerPaddingY + metadataHeight + expandedTopBottomPadding
+    )
+    const expandedHeight =
+        expandedTopHeight +
+        progressMarginTop +
+        progressBarHeight +
+        progressGap +
+        10 +
+        progressBottomPadding
+
+    const chromeWidth = outerPaddingX * 2 + albumSize + albumTextGap + innerPadding
+    const collapsedWidth = isPlaying ? collapsedPlayingWidth : collapsedIdleWidth
+    const minimumExpandedWidth = collapsedPlayingWidth + Math.max(48, albumSize * 2)
+    const measuredContentWidth = Math.max(
+        168,
+        measureTextWidth("Now Playing", 9, 600, 1.4) + 18,
+        measureTextWidth(data?.song, 13, 600),
+        measureTextWidth(data?.artist, 11, 500)
+    )
+    const expandedWidth = isPlaying
+        ? Math.max(
+              collapsedPlayingWidth,
+              Math.min(
+                  maxExpandedWidth,
+                  Math.max(minimumExpandedWidth, chromeWidth + measuredContentWidth)
+              )
+          )
+        : collapsedIdleWidth
+
+    const shellExpanded =
+        hoverPhase === "expanding" || hoverPhase === "expanded"
+    const shellCollapsing = hoverPhase === "collapsing"
+    const shellElevated = hoverPhase !== "collapsed"
+    const progressHead = Math.max(0, Math.min(100, progress))
+
+    const topPaddingTop = shellExpanded ? outerPaddingY : innerPadding
+    const topPaddingBottom = shellExpanded ? expandedTopBottomPadding : innerPadding
+    const rightPanelHeight = shellExpanded
+        ? expandedTopHeight - topPaddingTop - topPaddingBottom
+        : waveRowHeight
+
+    const shellTransition = shellCollapsing
+        ? [
+              `width ${shellCollapseDuration}s ${easing} ${shellCollapseDelay}s`,
+              `height ${shellCollapseDuration}s ${easing} ${shellCollapseDelay}s`,
+              `border-radius ${shellCollapseDuration}s ${easing} ${shellCollapseDelay}s`,
+              `box-shadow ${shellCollapseDuration}s ease`,
+          ].join(", ")
+        : [
+              `width ${shellExpandDuration}s ${easing}`,
+              `height ${shellExpandDuration}s ${easing}`,
+              `border-radius ${shellExpandDuration}s ${easing}`,
+              `box-shadow ${shellExpandDuration}s ease`,
+          ].join(", ")
+
+    const topStripTransition = shellCollapsing
+        ? [
+              `height ${shellCollapseDuration}s ${easing} ${shellCollapseDelay}s`,
+              `padding ${shellCollapseDuration}s ${easing} ${shellCollapseDelay}s`,
+          ].join(", ")
+        : [
+              `height ${shellExpandDuration}s ${easing}`,
+              `padding ${shellExpandDuration}s ${easing}`,
+          ].join(", ")
+
+    const rightPanelTransition = shellCollapsing
+        ? `height ${shellCollapseDuration}s ${easing} ${shellCollapseDelay}s`
+        : `height ${shellExpandDuration}s ${easing}`
+
+    const waveTransition = shellCollapsing
+        ? [
+              `transform ${waveMorphDuration}s ${easing} ${waveReturnDelay}s`,
+              `opacity ${waveFadeDuration}s ease ${waveReturnDelay}s`,
+          ].join(", ")
+        : [
+              `transform ${waveMorphDuration}s ${easing}`,
+              `opacity ${waveFadeDuration}s ease 0.04s`,
+          ].join(", ")
+
+    const detailsTransition = shellCollapsing
+        ? [
+              `opacity 0.18s ease`,
+              `transform 0.22s ${easing}`,
+              `filter 0.22s ease`,
+          ].join(", ")
+        : [
+              `opacity ${detailsFadeDuration}s ease ${detailsEnterDelay}s`,
+              `transform ${detailsFadeDuration}s ${easing} ${detailsEnterDelay}s`,
+              `filter ${detailsFadeDuration}s ease ${detailsEnterDelay}s`,
+          ].join(", ")
+
+    const progressTransition = shellCollapsing
+        ? [
+              `max-height 0.28s ${easing}`,
+              `margin-top 0.28s ${easing}`,
+              `padding-bottom 0.28s ${easing}`,
+              `opacity 0.18s ease`,
+              `transform 0.22s ${easing}`,
+          ].join(", ")
+        : [
+              `max-height ${shellExpandDuration}s ${easing} ${progressEnterDelay}s`,
+              `margin-top ${shellExpandDuration}s ${easing} ${progressEnterDelay}s`,
+              `padding-bottom ${shellExpandDuration}s ${easing} ${progressEnterDelay}s`,
+              `opacity ${progressFadeDuration}s ease ${progressEnterDelay}s`,
+              `transform ${progressFadeDuration}s ${easing} ${progressEnterDelay}s`,
+          ].join(", ")
 
     const envelopeAt = (i) => {
         const dist = Math.abs(i - center) / center
@@ -208,13 +447,8 @@ export default function SpotifyNowPlaying(props) {
 
     // ---- Animation loop: frequency-clustered Gaussian peaks ----
     useEffect(() => {
-        // Halt on hover OR when not playing — reset bars to baseline so they
-        // don't "glitch" through the layout while the pill is expanding/collapsing
-        if (!isPlaying || hovered) {
-            if (rafRef.current) {
-                cancelAnimationFrame(rafRef.current)
-                rafRef.current = null
-            }
+        if (!isPlaying) {
+            if (rafRef.current) cancelAnimationFrame(rafRef.current)
             const uniformRest = waveRowHeight * 0.08
             barRefs.current.forEach((el) => {
                 if (!el) return
@@ -223,11 +457,7 @@ export default function SpotifyNowPlaying(props) {
             return
         }
 
-        // --- Global Activity Mask ---
-        // Indices 0..edgeZone and (barCount-edgeZone)..end ramp from 0 → 1 via
-        // smoothstep, so the extreme edges are calm and the center is hot.
-        // Scales with barCount so you can tweak bar density later.
-        const edgeZone = Math.round(barCount * 0.18) // e.g. 11 bars per side at 60
+        const edgeZone = Math.round(barCount * 0.18)
         const activityMask = new Float32Array(barCount)
         for (let i = 0; i < barCount; i++) {
             let m
@@ -236,71 +466,62 @@ export default function SpotifyNowPlaying(props) {
                 m = (barCount - 1 - i) / edgeZone
             else m = 1
             m = Math.max(0, Math.min(1, m))
-            activityMask[i] = m * m * (3 - 2 * m) // smoothstep easing
+            activityMask[i] = m * m * (3 - 2 * m)
         }
 
-        // --- State arrays ---
         const barEnergy = new Float32Array(barCount)
         const currentHeights = new Float32Array(barCount)
         const uniformMinH = waveRowHeight * 0.08
         const maxH = waveRowHeight * 1.0
         for (let i = 0; i < barCount; i++) currentHeights[i] = uniformMinH
 
-        // --- TUNE: physics + event scheduling ---
-        const heightDecayPerFrame = 0.88 // bar gravity (lower = faster fall)
-        const energyDecayPerFrame = 0.9 // how fast the spike energy bleeds off
+        const heightDecayPerFrame = 0.88
+        const energyDecayPerFrame = 0.9
         const beatsPerSecond = effectiveBpm / 60
-        // Event triggers fire ~3.5x per beat with jitter, each firing a burst
-        // of 2-3 simultaneous peaks. At 128 BPM that's ~7-10 peaks/second.
         const triggersPerBeat = 3.5
-        const burstMin = 2 // min simultaneous peaks per trigger
-        const burstMax = 3 // max simultaneous peaks per trigger
-        // -----------------------------------------
+        const burstMin = 2
+        const burstMax = 3
 
-        // --- Sound event spawner ---
-        // Each event = a Gaussian bump of energy centered on some bar.
-        // We pick from 3 "bands" with different center distributions, widths,
-        // and amplitude ranges, so peaks look like different instruments.
         const centerIdx = (barCount - 1) / 2
         const spawnEvent = (kick) => {
             const roll = Math.random()
-            let center, sigma, amplitude
+            let peakCenter
+            let sigma
+            let amplitude
+
             if (roll < 0.35) {
-                // BASS: center-biased, wide cluster (5-7 bars), strong amplitude,
-                // boosted by the kick drum
-                center = centerIdx + (Math.random() - 0.5) * barCount * 0.25
+                peakCenter =
+                    centerIdx + (Math.random() - 0.5) * barCount * 0.25
                 sigma = barCount * 0.05 + Math.random() * barCount * 0.04
-                amplitude = 0.7 + Math.random() * 0.3
-                amplitude *= 1 + kick * 0.4
+                amplitude = (0.7 + Math.random() * 0.3) * (1 + kick * 0.4)
             } else if (roll < 0.75) {
-                // MID: off-center, medium cluster (3-5 bars)
-                center = centerIdx + (Math.random() - 0.5) * barCount * 0.55
+                peakCenter =
+                    centerIdx + (Math.random() - 0.5) * barCount * 0.55
                 sigma = barCount * 0.035 + Math.random() * barCount * 0.025
                 amplitude = 0.4 + Math.random() * 0.35
             } else {
-                // HIGH: anywhere, narrow cluster (2-3 bars), sharper
-                center = edgeZone + Math.random() * (barCount - edgeZone * 2)
+                peakCenter =
+                    edgeZone + Math.random() * (barCount - edgeZone * 2)
                 sigma = barCount * 0.02 + Math.random() * barCount * 0.02
                 amplitude = 0.3 + Math.random() * 0.3
             }
 
             const twoSigmaSq = 2 * sigma * sigma
-            const radius = Math.ceil(sigma * 3) // ~99% of Gaussian mass
-            const start = Math.max(0, Math.floor(center - radius))
-            const end = Math.min(barCount - 1, Math.ceil(center + radius))
+            const radius = Math.ceil(sigma * 3)
+            const start = Math.max(0, Math.floor(peakCenter - radius))
+            const end = Math.min(barCount - 1, Math.ceil(peakCenter + radius))
 
             for (let i = start; i <= end; i++) {
-                const d = i - center
-                const falloff = Math.exp(-(d * d) / twoSigmaSq)
-                // Multiply by the global activity mask — edges stay calm
-                // even if a peak happens to land there
-                const contrib = amplitude * falloff * activityMask[i]
-                // Take the max so overlapping events don't just average out
+                const d = i - peakCenter
+                const falloff =
+                    Math.exp(-(d * d) / twoSigmaSq) *
+                    activityMask[i] *
+                    envelopeAt(i)
+                const contrib = amplitude * falloff
                 if (contrib > barEnergy[i]) barEnergy[i] = contrib
             }
         }
 
-        // --- Frame loop ---
         const startTime = performance.now()
         let lastFrameTime = startTime
         let nextSpawnAt = 0
@@ -311,60 +532,73 @@ export default function SpotifyNowPlaying(props) {
             const dt = Math.min(50, now - lastFrameTime) / (1000 / 60)
             lastFrameTime = now
 
-            // Master kick for bass amplitude boost
             const beatPhase = (t * beatsPerSecond) % 1
             const kick =
                 beatPhase < 0.1
                     ? beatPhase / 0.1
                     : Math.exp(-(beatPhase - 0.1) * 4)
 
-            // --- Trigger sound events on schedule ---
             if (t >= nextSpawnAt) {
                 const burstCount =
                     burstMin +
                     Math.floor(Math.random() * (burstMax - burstMin + 1))
                 for (let k = 0; k < burstCount; k++) spawnEvent(kick)
-                // Schedule next trigger: baseline rate + 60-140% jitter
                 const interval = 1 / (beatsPerSecond * triggersPerBeat)
                 nextSpawnAt = t + interval * (0.6 + Math.random() * 0.8)
             }
 
-            // --- Resolve bar physics: instant attack, gravity decay, no wobble ---
             const decayK = Math.pow(heightDecayPerFrame, dt)
             const energyK = Math.pow(energyDecayPerFrame, dt)
+
             for (let i = 0; i < barCount; i++) {
                 const el = barRefs.current[i]
                 if (!el) continue
 
-                // Target derived purely from energy — no idle noise
+                const sway =
+                    Math.sin(
+                        t * temporalFreq * Math.PI * 2 +
+                            i * spatialFreq * Math.PI * 2
+                    ) *
+                    0.015 *
+                    swingAmount
                 const target =
                     uniformMinH +
-                    (maxH - uniformMinH) * Math.min(1, barEnergy[i])
+                    (maxH - uniformMinH) *
+                        Math.min(1, Math.max(0, barEnergy[i] + sway))
 
                 if (target >= currentHeights[i]) {
-                    // Rising: snap (instant attack)
                     currentHeights[i] = target
                 } else {
-                    // Falling: exponential decay toward baseline (frame-rate independent)
                     currentHeights[i] =
                         uniformMinH + (currentHeights[i] - uniformMinH) * decayK
-                    if (currentHeights[i] < uniformMinH)
+                    if (currentHeights[i] < uniformMinH) {
                         currentHeights[i] = uniformMinH
+                    }
                 }
 
-                // Energy bleeds off so the bar eventually settles back to rest
                 barEnergy[i] *= energyK
-
                 el.style.height = `${currentHeights[i]}px`
             }
 
             rafRef.current = requestAnimationFrame(frame)
         }
+
         rafRef.current = requestAnimationFrame(frame)
         return () => {
             if (rafRef.current) cancelAnimationFrame(rafRef.current)
         }
-    }, [isPlaying, hovered, trackHash, barCount, waveRowHeight, effectiveBpm])
+    }, [
+        isPlaying,
+        trackHash,
+        barCount,
+        waveRowHeight,
+        effectiveBpm,
+        envelopeSigma,
+        spatialFreq,
+        swingAmount,
+        temporalFreq,
+    ])
+
     return (
         <div
             style={{
@@ -376,67 +610,137 @@ export default function SpotifyNowPlaying(props) {
                 position: "relative",
             }}
         >
+            <style>{`
+                @keyframes spotifyAmbientDriftPrimary {
+                    0% {
+                        transform: translate3d(-9%, -6%, 0) scale(1.02);
+                    }
+                    33% {
+                        transform: translate3d(7%, 10%, 0) scale(1.07);
+                    }
+                    66% {
+                        transform: translate3d(12%, -8%, 0) scale(1.03);
+                    }
+                    100% {
+                        transform: translate3d(-9%, -6%, 0) scale(1.02);
+                    }
+                }
+
+                @keyframes spotifyAmbientDriftSecondary {
+                    0% {
+                        transform: translate3d(10%, 8%, 0) scale(0.96);
+                    }
+                    50% {
+                        transform: translate3d(-8%, -10%, 0) scale(1.04);
+                    }
+                    100% {
+                        transform: translate3d(10%, 8%, 0) scale(0.96);
+                    }
+                }
+
+                @keyframes spotifyGlassBreathe {
+                    0%,
+                    100% {
+                        opacity: 0.38;
+                    }
+                    50% {
+                        opacity: 0.5;
+                    }
+                }
+            `}</style>
             <div
-                onMouseEnter={() => isPlaying && setHovered(true)}
-                onMouseLeave={() => setHovered(false)}
+                onMouseEnter={expandHoverCard}
+                onMouseLeave={collapseHoverCard}
                 style={{
-                    width: isPlaying ? undefined : collapsedIdleWidth,
-                    minWidth: isPlaying
-                        ? collapsedPlayingWidth
-                        : collapsedIdleWidth,
-                    maxWidth:
-                        hovered && isPlaying
-                            ? maxExpandedWidth
-                            : collapsedPlayingWidth,
-                    minHeight: collapsedHeight,
-                    maxHeight: hovered && isPlaying ? 220 : collapsedHeight,
+                    width: shellExpanded ? expandedWidth : collapsedWidth,
+                    height: shellExpanded ? expandedHeight : collapsedHeight,
                     background: backgroundColor,
-                    borderRadius: collapsedHeight / 2,
+                    backdropFilter: "blur(18px) saturate(115%)",
+                    WebkitBackdropFilter: "blur(18px) saturate(115%)",
+                    borderRadius: shellExpanded
+                        ? Math.max(22, collapsedHeight * 0.42)
+                        : collapsedHeight / 2,
                     position: "relative",
                     overflow: "hidden",
-                    transition: hovered
-                        ? [
-                              `max-width ${expansionDuration}s ${easing} 0s`,
-                              `min-width ${expansionDuration}s ${easing} 0s`,
-                              `max-height ${expansionDuration}s ${easing} 0s`,
-                              `border-radius ${expansionDuration}s ${easing} 0s`,
-                              `box-shadow ${expansionDuration}s ease 0s`,
-                          ].join(", ")
-                        : [
-                              `max-width ${collapseDuration}s ${easing} ${exitDelay}s`,
-                              `min-width ${collapseDuration}s ${easing}`,
-                              `max-height ${collapseDuration}s ${easing} ${exitDelay}s`,
-                              `border-radius ${collapseDuration}s ${easing} ${exitDelay}s`,
-                              `box-shadow ${collapseDuration}s ease`,
-                          ].join(", "),
-                    fontFamily:
-                        "-apple-system, BlinkMacSystemFont, 'Inter', sans-serif",
-                    boxShadow: hovered
-                        ? "0 10px 40px rgba(0,0,0,0.4)"
-                        : "0 4px 12px rgba(0,0,0,0.25)",
+                    transition: shellTransition,
+                    fontFamily,
+                    boxShadow: shellElevated
+                        ? "0 18px 48px rgba(0,0,0,0.42)"
+                        : "0 8px 20px rgba(0,0,0,0.24)",
                     display: "flex",
                     flexDirection: "column",
+                    color: textColor,
+                    willChange: "width, height, border-radius",
                 }}
             >
-                {/* Top strip */}
                 <div
                     style={{
-                        minHeight: collapsedHeight,
-                        padding:
-                            hovered && isPlaying
-                                ? `${outerPaddingY}px ${outerPaddingX}px 0 ${outerPaddingX}px`
-                                : `${innerPadding}px ${outerPaddingX}px ${innerPadding}px ${outerPaddingX}px`,
-                        boxSizing: "border-box",
-                        display: "flex",
-                        alignItems:
-                            hovered && isPlaying ? "flex-start" : "center",
-                        gap: albumTextGap,
-                        flexShrink: 0,
-                        transition: `padding ${expansionDuration}s ${easing}`,
-                        position: "relative",
+                        position: "absolute",
+                        inset: 0,
+                        pointerEvents: "none",
                     }}
                 >
-                    {/* Album art */}
+                    <div
+                        style={{
+                            position: "absolute",
+                            inset: "-28%",
+                            borderRadius: "50%",
+                            background:
+                                "radial-gradient(circle, rgba(255,255,255,0.11) 0%, rgba(255,255,255,0.055) 24%, rgba(255,255,255,0.018) 48%, rgba(255,255,255,0) 72%)",
+                            filter: "blur(16px)",
+                            opacity: shellElevated ? 0.95 : 0.78,
+                            animation:
+                                "spotifyAmbientDriftPrimary 18s ease-in-out infinite",
+                        }}
+                    />
+                    <div
+                        style={{
+                            position: "absolute",
+                            inset: "-34%",
+                            borderRadius: "50%",
+                            background:
+                                "radial-gradient(circle, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.026) 34%, rgba(255,255,255,0) 70%)",
+                            filter: "blur(22px)",
+                            opacity: shellElevated ? 0.58 : 0.46,
+                            animation:
+                                "spotifyAmbientDriftSecondary 24s ease-in-out infinite",
+                        }}
+                    />
+                    <div
+                        style={{
+                            position: "absolute",
+                            inset: 0,
+                            background:
+                                "linear-gradient(180deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.025) 22%, rgba(255,255,255,0.01) 48%, rgba(255,255,255,0) 100%)",
+                            animation:
+                                "spotifyGlassBreathe 9s ease-in-out infinite",
+                        }}
+                    />
+                    <div
+                        style={{
+                            position: "absolute",
+                            inset: 0,
+                            borderRadius: "inherit",
+                            boxShadow:
+                                "inset 0 1px 0 rgba(255,255,255,0.075), inset 0 0 0 1px rgba(255,255,255,0.035)",
+                        }}
+                    />
+                </div>
+                <div
+                    style={{
+                        position: "relative",
+                        zIndex: 1,
+                        height: shellExpanded ? expandedTopHeight : collapsedHeight,
+                        padding: `${topPaddingTop}px ${outerPaddingX}px ${topPaddingBottom}px ${outerPaddingX}px`,
+                        boxSizing: "border-box",
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: albumTextGap,
+                        flexShrink: 0,
+                        position: "relative",
+                        transition: topStripTransition,
+                    }}
+                >
                     <div
                         style={{
                             width: albumSize,
@@ -451,6 +755,10 @@ export default function SpotifyNowPlaying(props) {
                             backgroundSize: "cover",
                             backgroundPosition: "center",
                             position: "relative",
+                            boxShadow: shellElevated
+                                ? "0 10px 22px rgba(0,0,0,0.18)"
+                                : "none",
+                            transition: "box-shadow 0.3s ease",
                         }}
                     >
                         {!isPlaying && (
@@ -471,109 +779,83 @@ export default function SpotifyNowPlaying(props) {
                         )}
                     </div>
 
-                    {/* Playing right side */}
                     {isPlaying ? (
                         <div
                             style={{
                                 position: "relative",
                                 flex: 1,
-                                minHeight: waveRowHeight,
-                                height: hovered ? "auto" : waveRowHeight,
                                 minWidth: 0,
+                                height: rightPanelHeight,
+                                transition: rightPanelTransition,
                             }}
                         >
-                            {/* Waveform layer — collapses into the progress bar */}
                             <div
                                 style={{
                                     position: "absolute",
-                                    top: 0,
+                                    top: "50%",
                                     left: 0,
-                                    right: 0,
+                                    right: innerPadding,
                                     height: waveRowHeight,
                                     display: "flex",
                                     alignItems: "center",
                                     gap: barGap,
-                                    opacity: hovered ? 0 : 1,
+                                    opacity: shellExpanded ? 0 : 1,
                                     transformOrigin: "center center",
-                                    // scaleY(0) collapses height to nothing,
-                                    // creating the "flatten into line" effect
-                                    transform: hovered
-                                        ? "scaleY(0.06)"
-                                        : "scaleY(1)",
-                                    transition: hovered
-                                        ? [
-                                              `transform ${expansionDuration}s ${easing}`,
-                                              `opacity ${hoverFadeDuration * 0.7}s ease`,
-                                          ].join(", ")
-                                        : [
-                                              `transform ${collapseDuration}s ${easing}`,
-                                              `opacity ${hoverFadeDuration * 0.7}s ease ${collapseDuration * 0.25}s`,
-                                          ].join(", "),
-                                    pointerEvents: hovered ? "none" : "auto",
+                                    transform: shellExpanded
+                                        ? "translateY(-50%) scaleY(0.12)"
+                                        : "translateY(-50%) scaleY(1)",
+                                    transition: waveTransition,
+                                    pointerEvents: shellExpanded ? "none" : "auto",
+                                    filter: shellExpanded ? "blur(1px)" : "blur(0px)",
                                 }}
                             >
-                                {Array.from({ length: barCount }).map(
-                                    (_, i) => (
-                                        <div
-                                            key={i}
-                                            ref={(el) =>
-                                                (barRefs.current[i] = el)
-                                            }
-                                            style={{
-                                                flex: 1,
-                                                height: `${waveRowHeight * 0.3}px`,
-                                                background: accent,
-                                                opacity: 1,
-                                                borderRadius: 1,
-                                                transition:
-                                                    "background 0.4s ease",
-                                            }}
-                                        />
-                                    )
-                                )}
+                                {Array.from({ length: barCount }).map((_, i) => (
+                                    <div
+                                        key={i}
+                                        ref={(el) => (barRefs.current[i] = el)}
+                                        style={{
+                                            flex: 1,
+                                            height: `${waveRowHeight * 0.3}px`,
+                                            background: accent,
+                                            borderRadius: 999,
+                                            transition: "background 0.4s ease",
+                                        }}
+                                    />
+                                ))}
                             </div>
 
-                            {/* Text layer — fades in with delay */}
                             <div
                                 style={{
-                                    position: hovered ? "relative" : "absolute",
-                                    top: 0,
-                                    left: 0,
-                                    right: 0,
+                                    position: "absolute",
+                                    inset: 0,
                                     display: "flex",
                                     flexDirection: "column",
-                                    justifyContent: hovered
-                                        ? "flex-start"
-                                        : "center",
+                                    justifyContent: "flex-start",
                                     gap: textGap,
-                                    minWidth: 140,
+                                    minWidth: 0,
                                     paddingRight: innerPadding,
-                                    opacity: hovered ? 1 : 0,
-                                    transform: hovered
+                                    opacity: shellExpanded ? 1 : 0,
+                                    transform: shellExpanded
                                         ? "translateY(0)"
-                                        : "translateY(4px)",
-                                    transition: hovered
-                                        ? [
-                                              `opacity ${hoverFadeDuration}s ease ${expansionDuration * 0.35}s`,
-                                              `transform ${hoverFadeDuration}s ${easing} ${expansionDuration * 0.35}s`,
-                                          ].join(", ")
-                                        : [
-                                              `opacity ${hoverFadeDuration * 0.5}s ease 0s`,
-                                              `transform ${hoverFadeDuration * 0.5}s ${easing} 0s`,
-                                          ].join(", "),
-                                    pointerEvents: hovered ? "auto" : "none",
+                                        : "translateY(8px)",
+                                    filter: shellExpanded
+                                        ? "blur(0px)"
+                                        : "blur(6px)",
+                                    transition: detailsTransition,
+                                    pointerEvents: shellExpanded ? "auto" : "none",
                                 }}
                             >
                                 <div
                                     style={{
                                         fontSize: 9,
+                                        lineHeight: `${labelLineHeight}px`,
+                                        fontWeight: 600,
                                         textTransform: "uppercase",
                                         letterSpacing: 1.4,
                                         color: mutedColor,
                                         display: "flex",
                                         alignItems: "center",
                                         gap: 5,
-                                        lineHeight: 1,
                                     }}
                                 >
                                     <span
@@ -582,32 +864,35 @@ export default function SpotifyNowPlaying(props) {
                                             height: 5,
                                             borderRadius: "50%",
                                             background: accent,
-                                            boxShadow: `0 0 6px ${accent}`,
+                                            boxShadow: `0 0 8px ${accent}`,
+                                            flexShrink: 0,
                                         }}
                                     />
                                     Now Playing
                                 </div>
+
                                 <div
                                     style={{
                                         fontSize: 13,
+                                        lineHeight: `${titleLineHeight}px`,
                                         fontWeight: 600,
                                         color: textColor,
                                         whiteSpace: "nowrap",
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
-                                        lineHeight: 1.2,
                                     }}
                                 >
                                     {data.song}
                                 </div>
+
                                 <div
                                     style={{
                                         fontSize: 11,
+                                        lineHeight: `${artistLineHeight}px`,
                                         color: mutedColor,
                                         whiteSpace: "nowrap",
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
-                                        lineHeight: 1.2,
                                     }}
                                 >
                                     {data.artist}
@@ -625,7 +910,9 @@ export default function SpotifyNowPlaying(props) {
                                 textTransform: "uppercase",
                                 letterSpacing: 1.3,
                                 color: mutedColor,
+                                height: albumSize,
                                 paddingRight: innerPadding,
+                                minWidth: 0,
                             }}
                         >
                             <span
@@ -642,56 +929,103 @@ export default function SpotifyNowPlaying(props) {
                     )}
                 </div>
 
-                {/* Progress bar + timestamps — unfurl from below */}
                 {isPlaying && (
                     <div
                         style={{
-                            padding: `0 ${outerPaddingX}px ${hovered ? outerPaddingY * 0.85 : 0}px ${outerPaddingX}px`,
+                            position: "relative",
+                            zIndex: 1,
+                            padding: `0 ${outerPaddingX}px ${shellExpanded ? progressBottomPadding : 0}px ${outerPaddingX}px`,
                             boxSizing: "border-box",
                             display: "flex",
                             flexDirection: "column",
-                            gap: 6,
-                            marginTop: hovered ? 10 : 0,
-                            maxHeight: hovered ? 60 : 0,
-                            opacity: hovered ? 1 : 0,
+                            gap: progressGap,
+                            marginTop: shellExpanded ? progressMarginTop : 0,
+                            maxHeight: shellExpanded
+                                ? expandedHeight - expandedTopHeight
+                                : 0,
+                            opacity: shellExpanded ? 1 : 0,
+                            transform: shellExpanded
+                                ? "translateY(0)"
+                                : "translateY(-6px)",
                             overflow: "hidden",
-                            // Asymmetric: on hover IN, max-height expands immediately.
-                            // On hover OUT, opacity fades first, then max-height collapses with a delay.
-                            transition: hovered
-                                ? [
-                                      `max-height ${expansionDuration}s ${easing}`,
-                                      `margin-top ${expansionDuration}s ${easing}`,
-                                      `padding ${expansionDuration}s ${easing}`,
-                                      `opacity ${hoverFadeDuration * 0.6}s ease ${expansionDuration * 0.55}s`,
-                                  ].join(", ")
-                                : [
-                                      `max-height ${collapseDuration}s ${easing} ${exitDelay}s`,
-                                      `margin-top ${collapseDuration}s ${easing} ${exitDelay}s`,
-                                      `padding ${collapseDuration}s ${easing} ${exitDelay}s`,
-                                      `opacity 0.2s ease 0s`,
-                                  ].join(", "),
+                            transition: progressTransition,
                         }}
                     >
-                        {/* Progress line — parent container controls opacity */}
                         <div
                             style={{
-                                height: progressBarHeight,
-                                background: mutedColor,
-                                borderRadius: 2,
-                                overflow: "hidden",
-                                opacity: 0.4,
+                                position: "relative",
+                                height: 12,
+                                display: "flex",
+                                alignItems: "center",
+                                overflow: "visible",
                             }}
                         >
                             <div
                                 style={{
-                                    height: "100%",
-                                    width: `${progress}%`,
-                                    background: accent,
-                                    transition: "width 0.5s linear",
+                                    width: "100%",
+                                    height: progressBarHeight,
+                                    background: mutedColor,
+                                    borderRadius: 999,
+                                    position: "relative",
+                                    overflow: "visible",
+                                    opacity: 0.4,
+                                    zIndex: 1,
                                 }}
-                            />
+                            >
+                                {progressHead > 0 && (
+                                    <div
+                                        style={{
+                                            position: "absolute",
+                                            top: "50%",
+                                            left: `${progressHead}%`,
+                                            width: 42,
+                                            height: 42,
+                                            transform: "translate(-50%, -50%)",
+                                            borderRadius: "50%",
+                                            background: `radial-gradient(circle, ${accent}32 0%, ${accent}18 28%, ${accent}10 48%, rgba(255,255,255,0) 72%)`,
+                                            filter: "blur(10px)",
+                                            opacity: 0.8,
+                                            pointerEvents: "none",
+                                        }}
+                                    />
+                                )}
+                                <div
+                                    style={{
+                                        position: "relative",
+                                        height: "100%",
+                                        width: `${progress}%`,
+                                        minWidth:
+                                            progressHead > 0
+                                                ? progressBarHeight
+                                                : 0,
+                                        background: accent,
+                                        borderRadius: 999,
+                                        boxShadow: `0 0 10px ${accent}12`,
+                                        transition: "width 0.5s linear",
+                                        overflow: "visible",
+                                    }}
+                                >
+                                    {progressHead > 0 && (
+                                        <div
+                                            style={{
+                                                position: "absolute",
+                                                right: -1,
+                                                top: "50%",
+                                                width: 6,
+                                                height: 6,
+                                                transform:
+                                                    "translate(50%, -50%)",
+                                                borderRadius: "50%",
+                                                background: accent,
+                                                opacity: 0.95,
+                                                boxShadow: `0 0 0 1px ${accent}18, 0 0 10px ${accent}66, 0 0 18px ${accent}22`,
+                                            }}
+                                        />
+                                    )}
+                                </div>
+                            </div>
                         </div>
-                        {/* Timestamps — parent container controls opacity */}
+
                         <div
                             style={{
                                 display: "flex",
@@ -699,7 +1033,7 @@ export default function SpotifyNowPlaying(props) {
                                 fontSize: 10,
                                 color: mutedColor,
                                 fontVariantNumeric: "tabular-nums",
-                                lineHeight: 1,
+                                lineHeight: "10px",
                             }}
                         >
                             <span>{fmt(elapsedMs)}</span>
@@ -789,9 +1123,9 @@ addPropertyControls(SpotifyNowPlaying, {
     barCount: {
         type: ControlType.Number,
         title: "Bars",
-        defaultValue: 40,
+        defaultValue: 60,
         min: 10,
-        max: 60,
+        max: 100,
         step: 1,
     },
 })
