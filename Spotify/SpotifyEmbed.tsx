@@ -205,6 +205,7 @@ export default function SpotifyNowPlaying(props) {
     }
 
     // ---- Animation loop ----
+    // ---- Animation loop with physics + master pulse ----
     useEffect(() => {
         if (!isPlaying) {
             if (rafRef.current) cancelAnimationFrame(rafRef.current)
@@ -218,6 +219,8 @@ export default function SpotifyNowPlaying(props) {
         }
 
         const seed = trackHash >>> 0
+
+        // --- 1D value noise (smooth, deterministic per track) ---
         const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10)
         const lerp = (a, b, t) => a + t * (b - a)
         const grad = (hashVal, x) => {
@@ -243,30 +246,91 @@ export default function SpotifyNowPlaying(props) {
             return lerp(n0, n1, t) / 8
         }
 
+        // --- Physics state: current height (displayed) vs target height ---
+        const currentHeights = new Float32Array(barCount)
+        const targetHeights = new Float32Array(barCount)
+        // Prime with rest heights so the first frame isn't a jump from zero
+        for (let i = 0; i < barCount; i++) {
+            const env = envelopeAt(i)
+            currentHeights[i] = waveRowHeight * (0.08 + env * 0.14)
+        }
+
+        // --- TUNE: physics constants ---
+        // Attack = how fast bars rise (higher = snappier on the beat)
+        // Decay  = how fast bars fall (lower = more "gravity", slower fall)
+        const attackSpeed = 0.35 // per-frame lerp factor on rise
+        const decaySpeed = 0.12 // per-frame lerp factor on fall
+        // Master pulse: simulates a kick drum at the track's BPM
+        const beatsPerSecond = effectiveBpm / 60
+        const pulseDepth = 0.25 // how much the pulse modulates amplitude (0–1)
+        // ------------------------------
+
         const startTime = performance.now()
+        let lastFrameTime = startTime
 
         const frame = () => {
             const now = performance.now()
             const t = (now - startTime) / 1000
+            // Normalize physics to 60fps so it feels the same regardless of refresh rate
+            const dt = Math.min(50, now - lastFrameTime) / (1000 / 60)
+            lastFrameTime = now
+
             const timeOffset = t * temporalFreq
 
-            for (let i = 0; i < barCount; i++) {
-                const el = barRefs.current[i]
-                if (!el) continue
+            // --- Master pulse: sharp attack, soft decay per beat ---
+            // phase goes 0 → 1 each beat; we shape it into a "kick" envelope
+            const beatPhase = (t * beatsPerSecond) % 1
+            // Fast rise in first 10% of the beat, exponential decay after
+            const kick =
+                beatPhase < 0.1
+                    ? beatPhase / 0.1
+                    : Math.exp(-(beatPhase - 0.1) * 4)
+            // pulseMultiplier oscillates around 1.0, boosting amplitude on the beat
+            const pulseMultiplier = 1 + kick * pulseDepth
 
-                const n = noise1D(i * spatialFreq + timeOffset)
+            // --- Compute target heights ---
+            for (let i = 0; i < barCount; i++) {
+                // Two noise octaves for richer flow (low freq + high freq detail)
+                const n1 = noise1D(i * spatialFreq + timeOffset)
+                const n2 =
+                    noise1D(i * spatialFreq * 2.3 + timeOffset * 1.7) * 0.4
+                const n = (n1 + n2) / 1.4
                 const nNormalized = (n + 1) / 2
+
+                // Gaussian envelope — bass in the middle, treble at edges
                 const env = envelopeAt(i)
+
                 const minH = waveRowHeight * 0.1
                 const maxH = waveRowHeight * 1.0
 
                 const restFactor = 0.08 + env * 0.14
                 const swingRange = env * swingAmount
-                const factor = restFactor + swingRange * nNormalized
+                const rawFactor = restFactor + swingRange * nNormalized
 
-                const height = minH + (maxH - minH) * Math.min(1, factor)
-                el.style.height = `${height}px`
+                // Apply master pulse — center bars feel the kick more (bass)
+                const pulseInfluence =
+                    1 + (pulseMultiplier - 1) * (0.4 + env * 0.6)
+                const factor = rawFactor * pulseInfluence
+
+                targetHeights[i] = minH + (maxH - minH) * Math.min(1, factor)
             }
+
+            // --- Physics smoothing: asymmetric lerp (fast rise, slow fall) ---
+            for (let i = 0; i < barCount; i++) {
+                const el = barRefs.current[i]
+                if (!el) continue
+
+                const current = currentHeights[i]
+                const target = targetHeights[i]
+                const rising = target > current
+                const speed = rising ? attackSpeed : decaySpeed
+                // 1 - (1 - speed)^dt keeps the lerp framerate-independent
+                const k = 1 - Math.pow(1 - speed, dt)
+                currentHeights[i] = current + (target - current) * k
+
+                el.style.height = `${currentHeights[i]}px`
+            }
+
             rafRef.current = requestAnimationFrame(frame)
         }
         rafRef.current = requestAnimationFrame(frame)
@@ -282,8 +346,8 @@ export default function SpotifyNowPlaying(props) {
         temporalFreq,
         envelopeSigma,
         swingAmount,
+        effectiveBpm,
     ])
-
     return (
         <div
             style={{
@@ -435,7 +499,7 @@ export default function SpotifyNowPlaying(props) {
                                                 opacity: 1,
                                                 borderRadius: 1,
                                                 transition:
-                                                    "height 0.08s linear, background 0.4s ease",
+                                                    "background 0.4s ease",
                                             }}
                                         />
                                     )
