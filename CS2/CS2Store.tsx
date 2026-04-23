@@ -240,19 +240,6 @@ export const withProfileAvatar = (Component): ComponentType => {
     })
 }
 
-export const withProfileLink = (Component): ComponentType => {
-    return forwardRef((props, ref) => {
-        const { data } = useCS2Store()
-        const profileUrl = data?.profileUrl ?? null
-
-        if (!profileUrl) {
-            return <Component ref={ref} {...props} />
-        }
-
-        return <Component ref={ref} {...props} href={profileUrl} link={profileUrl} />
-    })
-}
-
 export const withOnlineStatus = (Component): ComponentType => {
     return forwardRef((props, ref) => {
         const { data } = useCS2Store()
