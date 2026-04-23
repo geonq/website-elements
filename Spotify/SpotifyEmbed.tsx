@@ -217,6 +217,36 @@ export default function SpotifyNowPlaying(props) {
     const accent =
         useAlbumColor && extractedColor ? extractedColor : accentColorProp
 
+    const withAlpha = (color, alpha) => {
+        if (!color) return `rgba(255,255,255,${alpha})`
+
+        if (color.startsWith("#")) {
+            let hex = color.slice(1)
+            if (hex.length === 3) {
+                hex = hex
+                    .split("")
+                    .map((char) => char + char)
+                    .join("")
+            }
+            if (hex.length === 6) {
+                const r = parseInt(hex.slice(0, 2), 16)
+                const g = parseInt(hex.slice(2, 4), 16)
+                const b = parseInt(hex.slice(4, 6), 16)
+                return `rgba(${r}, ${g}, ${b}, ${alpha})`
+            }
+        }
+
+        const rgbMatch = color.match(/rgba?\(([^)]+)\)/i)
+        if (rgbMatch) {
+            const parts = rgbMatch[1].split(",").map((part) => part.trim())
+            if (parts.length >= 3) {
+                return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})`
+            }
+        }
+
+        return color
+    }
+
     const hash = (str) => {
         let h = 0
         for (let i = 0; i < (str?.length ?? 0); i++) {
@@ -367,6 +397,11 @@ export default function SpotifyNowPlaying(props) {
     const shellCollapsing = hoverPhase === "collapsing"
     const shellElevated = hoverPhase !== "collapsed"
     const progressHead = Math.max(0, Math.min(100, progress))
+    const ambientAccentStrong = withAlpha(accent, 0.12)
+    const ambientAccentSoft = withAlpha(accent, 0.05)
+    const ambientAccentFaint = withAlpha(accent, 0.018)
+    const trackBackground = withAlpha(mutedColor, 0.42)
+    const progressFillGlow = withAlpha(accent, 0.1)
 
     const topPaddingTop = shellExpanded ? outerPaddingY : innerPadding
     const topPaddingBottom = shellExpanded ? expandedTopBottomPadding : innerPadding
@@ -685,10 +720,9 @@ export default function SpotifyNowPlaying(props) {
                             position: "absolute",
                             inset: "-28%",
                             borderRadius: "50%",
-                            background:
-                                "radial-gradient(circle, rgba(255,255,255,0.11) 0%, rgba(255,255,255,0.055) 24%, rgba(255,255,255,0.018) 48%, rgba(255,255,255,0) 72%)",
+                            background: `radial-gradient(circle, ${ambientAccentStrong} 0%, ${ambientAccentSoft} 26%, ${ambientAccentFaint} 48%, rgba(255,255,255,0) 72%)`,
                             filter: "blur(16px)",
-                            opacity: shellElevated ? 0.95 : 0.78,
+                            opacity: shellElevated ? 0.62 : 0.48,
                             animation:
                                 "spotifyAmbientDriftPrimary 18s ease-in-out infinite",
                         }}
@@ -698,10 +732,9 @@ export default function SpotifyNowPlaying(props) {
                             position: "absolute",
                             inset: "-34%",
                             borderRadius: "50%",
-                            background:
-                                "radial-gradient(circle, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.026) 34%, rgba(255,255,255,0) 70%)",
+                            background: `radial-gradient(circle, ${ambientAccentSoft} 0%, ${ambientAccentFaint} 34%, rgba(255,255,255,0) 70%)`,
                             filter: "blur(22px)",
-                            opacity: shellElevated ? 0.58 : 0.46,
+                            opacity: shellElevated ? 0.28 : 0.2,
                             animation:
                                 "spotifyAmbientDriftSecondary 24s ease-in-out infinite",
                         }}
@@ -714,6 +747,7 @@ export default function SpotifyNowPlaying(props) {
                                 "linear-gradient(180deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.025) 22%, rgba(255,255,255,0.01) 48%, rgba(255,255,255,0) 100%)",
                             animation:
                                 "spotifyGlassBreathe 9s ease-in-out infinite",
+                            opacity: 0.52,
                         }}
                     />
                     <div
@@ -964,31 +998,13 @@ export default function SpotifyNowPlaying(props) {
                                 style={{
                                     width: "100%",
                                     height: progressBarHeight,
-                                    background: mutedColor,
+                                    background: trackBackground,
                                     borderRadius: 999,
                                     position: "relative",
                                     overflow: "visible",
-                                    opacity: 0.4,
                                     zIndex: 1,
                                 }}
                             >
-                                {progressHead > 0 && (
-                                    <div
-                                        style={{
-                                            position: "absolute",
-                                            top: "50%",
-                                            left: `${progressHead}%`,
-                                            width: 42,
-                                            height: 42,
-                                            transform: "translate(-50%, -50%)",
-                                            borderRadius: "50%",
-                                            background: `radial-gradient(circle, ${accent}32 0%, ${accent}18 28%, ${accent}10 48%, rgba(255,255,255,0) 72%)`,
-                                            filter: "blur(10px)",
-                                            opacity: 0.8,
-                                            pointerEvents: "none",
-                                        }}
-                                    />
-                                )}
                                 <div
                                     style={{
                                         position: "relative",
@@ -1000,29 +1016,11 @@ export default function SpotifyNowPlaying(props) {
                                                 : 0,
                                         background: accent,
                                         borderRadius: 999,
-                                        boxShadow: `0 0 10px ${accent}12`,
+                                        boxShadow: `0 0 10px ${progressFillGlow}`,
                                         transition: "width 0.5s linear",
                                         overflow: "visible",
                                     }}
-                                >
-                                    {progressHead > 0 && (
-                                        <div
-                                            style={{
-                                                position: "absolute",
-                                                right: -1,
-                                                top: "50%",
-                                                width: 6,
-                                                height: 6,
-                                                transform:
-                                                    "translate(50%, -50%)",
-                                                borderRadius: "50%",
-                                                background: accent,
-                                                opacity: 0.95,
-                                                boxShadow: `0 0 0 1px ${accent}18, 0 0 10px ${accent}66, 0 0 18px ${accent}22`,
-                                            }}
-                                        />
-                                    )}
-                                </div>
+                                />
                             </div>
                         </div>
 
