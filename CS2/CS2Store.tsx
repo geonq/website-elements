@@ -195,6 +195,10 @@ function useCS2Store() {
     return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
+export function useCS2Data() {
+    return useCS2Store()
+}
+
 export const withPremierRating = (Component): ComponentType => {
     return forwardRef((props, ref) => {
         const { data } = useCS2Store()
