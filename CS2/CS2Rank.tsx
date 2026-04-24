@@ -206,8 +206,23 @@ function useAnimatedNumber(
 //
 // @framerSupportedLayoutWidth fixed
 // @framerSupportedLayoutHeight auto
-// @framerIntrinsicWidth 300
-// @framerIntrinsicHeight 72
+// @framerIntrinsicWidth 140
+// @framerIntrinsicHeight 50
+
+function getBadgeDimensions(fontSize: number) {
+    return {
+        width: Math.round(fontSize * 4.95),
+        height: Math.round(fontSize * 1.78),
+        borderRadius: Math.max(3, Math.round(fontSize * 0.18)),
+        stripeWidth: Math.max(2, Math.round(fontSize * 0.18)),
+        stripeGap: Math.max(1, Math.round(fontSize * 0.08)),
+        stripeHeight: `${Math.max(50, Math.min(68, Math.round(fontSize * 2.15)))}%`,
+        leftRailPadding: Math.round(fontSize * 0.42),
+        rightPadding: Math.round(fontSize * 0.62),
+        innerLeftPadding: Math.round(fontSize * 0.22),
+        borderWidth: Math.max(1, Math.round(fontSize * 0.045)),
+    }
+}
 
 export default function CS2PremierRank(props: any) {
     const {
@@ -216,16 +231,10 @@ export default function CS2PremierRank(props: any) {
         fallbackText,
         animateNumber,
         animateDuration,
-        borderRadius,
         slantDeg,
+        textSlantDeg,
         glowStrength,
-        stripeWidth,
-        stripeGap,
-        paddingX,
-        height,
-        widthScale,
         numberFont,
-        subLabelScale,
     } = props
 
     // 1. Subscribe to the live Premier rating feed.
@@ -253,8 +262,7 @@ export default function CS2PremierRank(props: any) {
         typeof fontStyle.fontSize === "number"
             ? fontStyle.fontSize
             : Number.parseFloat(String(fontStyle.fontSize ?? 28)) || 28
-    const componentWidth = Math.round(numberFontSize * widthScale)
-    const subLabelFontSize = Math.max(10, Math.round(numberFontSize * subLabelScale))
+    const dimensions = getBadgeDimensions(numberFontSize)
 
     // 4. Flash on tier boundary crossings.
     const [flashKey, setFlashKey] = React.useState(0)
@@ -271,10 +279,8 @@ export default function CS2PremierRank(props: any) {
     return (
         <div
             style={{
-                width: componentWidth,
-                display: "flex",
-                flexDirection: "column",
-                gap: 8,
+                width: dimensions.width,
+                height: dimensions.height,
             }}
         >
             <style>{`
@@ -285,8 +291,8 @@ export default function CS2PremierRank(props: any) {
             <div
                 style={{
                     position: "relative",
-                    width: componentWidth,
-                    height,
+                    width: dimensions.width,
+                    height: dimensions.height,
                     filter: `drop-shadow(0 0 ${14 + glowStrength * 18}px ${hexToRgba(tier.glow, 0.22 + glowStrength * 0.22)})`,
                 }}
             >
@@ -295,8 +301,8 @@ export default function CS2PremierRank(props: any) {
                         position: "absolute",
                         inset: 0,
                         transform: `skewX(-${slantDeg}deg)`,
-                        borderRadius,
-                        border: `1px solid ${hexToRgba(tier.edge, 0.9)}`,
+                        borderRadius: dimensions.borderRadius,
+                        border: `${dimensions.borderWidth}px solid ${hexToRgba(tier.edge, 0.9)}`,
                         background: `linear-gradient(135deg, ${tier.start} 0%, ${tier.middle} 52%, ${tier.end} 100%)`,
                         boxShadow: `inset 0 1px 0 ${hexToRgba(tier.stripe, 0.35)}, inset 0 -10px 24px ${hexToRgba("#000000", 0.28)}`,
                         overflow: "hidden",
@@ -327,9 +333,9 @@ export default function CS2PremierRank(props: any) {
                     <div
                         style={{
                             display: "flex",
-                            gap: stripeGap,
+                            gap: dimensions.stripeGap,
                             alignItems: "center",
-                            paddingLeft: paddingX * 0.55,
+                            paddingLeft: dimensions.leftRailPadding,
                             height: "100%",
                             flexShrink: 0,
                         }}
@@ -338,8 +344,8 @@ export default function CS2PremierRank(props: any) {
                             <div
                                 key={i}
                                 style={{
-                                    width: stripeWidth,
-                                    height: "62%",
+                                    width: dimensions.stripeWidth,
+                                    height: dimensions.stripeHeight,
                                     background: `linear-gradient(180deg, ${tier.stripe} 0%, ${tier.edge} 100%)`,
                                     opacity,
                                     borderRadius: 1,
@@ -359,8 +365,8 @@ export default function CS2PremierRank(props: any) {
                             alignItems: "center",
                             justifyContent: "center",
                             transform: `skewX(${slantDeg}deg)`,
-                            paddingRight: paddingX,
-                            paddingLeft: 8,
+                            paddingRight: dimensions.rightPadding,
+                            paddingLeft: dimensions.innerLeftPadding,
                         }}
                     >
                         <div
@@ -369,6 +375,8 @@ export default function CS2PremierRank(props: any) {
                                 textShadow: `0 0 ${8 + glowStrength * 10}px ${hexToRgba(tier.glow, 0.5)}`,
                                 fontVariantNumeric: "tabular-nums",
                                 whiteSpace: "nowrap",
+                                transform: `skewX(-${textSlantDeg}deg)`,
+                                transformOrigin: "center",
                                 ...fontStyle,
                                 fontSize: numberFontSize,
                             }}
@@ -391,27 +399,6 @@ export default function CS2PremierRank(props: any) {
                     />
                 </div>
             </div>
-
-            <div
-                style={{
-                    width: componentWidth,
-                    color: hexToRgba(tier.text, 0.9),
-                    fontVariantNumeric: "tabular-nums",
-                    textAlign: "center",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    ...fontStyle,
-                    fontSize: subLabelFontSize,
-                    lineHeight: 1.1,
-                    letterSpacing:
-                        typeof fontStyle.letterSpacing === "number"
-                            ? fontStyle.letterSpacing * 0.35
-                            : fontStyle.letterSpacing,
-                }}
-            >
-                {displayText}
-            </div>
         </div>
     )
 }
@@ -433,15 +420,9 @@ CS2PremierRank.defaultProps = {
         lineHeight: 1,
         textAlign: "center",
     },
-    widthScale: 10.8,
-    subLabelScale: 0.42,
-    borderRadius: 6,
     slantDeg: 11,
+    textSlantDeg: 10,
     glowStrength: 0.85,
-    stripeWidth: 6,
-    stripeGap: 3,
-    paddingX: 22,
-    height: 58,
 }
 
 addPropertyControls(CS2PremierRank, {
@@ -497,51 +478,6 @@ addPropertyControls(CS2PremierRank, {
             textAlign: "center",
         },
     },
-    widthScale: {
-        type: ControlType.Number,
-        title: "Width",
-        defaultValue: 10.8,
-        min: 7,
-        max: 16,
-        step: 0.1,
-        displayStepper: true,
-    },
-    subLabelScale: {
-        type: ControlType.Number,
-        title: "Label Size",
-        defaultValue: 0.42,
-        min: 0.25,
-        max: 0.8,
-        step: 0.01,
-        displayStepper: true,
-    },
-    height: {
-        type: ControlType.Number,
-        title: "Height",
-        defaultValue: 58,
-        min: 36,
-        max: 140,
-        step: 1,
-        displayStepper: true,
-    },
-    paddingX: {
-        type: ControlType.Number,
-        title: "Pad X",
-        defaultValue: 22,
-        min: 8,
-        max: 60,
-        step: 1,
-        displayStepper: true,
-    },
-    borderRadius: {
-        type: ControlType.Number,
-        title: "Radius",
-        defaultValue: 6,
-        min: 0,
-        max: 24,
-        step: 1,
-        displayStepper: true,
-    },
     slantDeg: {
         type: ControlType.Number,
         title: "Slant°",
@@ -551,21 +487,12 @@ addPropertyControls(CS2PremierRank, {
         step: 1,
         displayStepper: true,
     },
-    stripeWidth: {
+    textSlantDeg: {
         type: ControlType.Number,
-        title: "Stripe W",
-        defaultValue: 6,
-        min: 2,
-        max: 14,
-        step: 1,
-        displayStepper: true,
-    },
-    stripeGap: {
-        type: ControlType.Number,
-        title: "Stripe Gap",
-        defaultValue: 3,
-        min: 1,
-        max: 10,
+        title: "Text Slant",
+        defaultValue: 10,
+        min: 0,
+        max: 24,
         step: 1,
         displayStepper: true,
     },
