@@ -6,9 +6,19 @@
 
 import * as React from "react"
 import { addPropertyControls, ControlType, RenderTarget } from "framer"
+import { motion } from "framer-motion"
 
 const WORKER_URL = "https://cs2store.domkegeorg2017.workers.dev/cs2/profile"
 const POLL_INTERVAL_MS = 60_000
+const LOCAL_DEBUG_DELTA_STORAGE_KEY = "cs2-rank-local-debug-delta"
+const LOCAL_DEBUG_DELTA_EVENT = "cs2-rank-local-debug-delta-change"
+
+type TransitionCacheEntry = {
+    text: string
+    key: number
+}
+
+const transitionCache = new Map<string, TransitionCacheEntry>()
 
 type CS2Data = {
     premierRating: number | null
@@ -18,6 +28,11 @@ type CS2StoreState = {
     data: CS2Data | null
     loading: boolean
     error: string | null
+}
+
+type LocalDebugOverride = {
+    active: boolean
+    delta: number
 }
 
 // ==================== TIERS ====================
@@ -63,6 +78,92 @@ function formatRating(value: number): string {
     return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(
         Math.max(0, Math.round(value))
     )
+}
+
+function splitRatingText(text: string) {
+    const parts = text.split(",")
+
+    if (parts.length === 1) {
+        return { major: text, minor: null as string | null }
+    }
+
+    return {
+        major: parts.slice(0, -1).join(","),
+        minor: parts[parts.length - 1],
+    }
+}
+
+function parseRatingNumber(text: string): number | null {
+    const normalized = text.replace(/[^\d-]/g, "")
+    if (normalized === "") {
+        return null
+    }
+
+    const parsed = Number(normalized)
+    return Number.isFinite(parsed) ? parsed : null
+}
+
+function padStartTokens(tokens: string[], length: number): Array<string | null> {
+    return Array.from({ length }, (_, index) => {
+        const offset = length - tokens.length
+        return index < offset ? null : tokens[index - offset]
+    })
+}
+
+function slotDelay(index: number, total: number) {
+    const fromRight = total - index - 1
+    const deterministicJitter = ((index * 37) % 7) * 0.04
+    return Math.min(0.18, 0.03 + fromRight * 0.02 + deterministicJitter)
+}
+
+function buildDigitRoll(
+    previousChar: string | null,
+    currentChar: string | null,
+    index: number,
+    total: number,
+    pushesUp: boolean
+): string[] {
+    const empty = "\u00A0"
+
+    if (previousChar === currentChar) {
+        return [currentChar ?? empty]
+    }
+
+    const previousIsDigit = previousChar !== null && /^\d$/.test(previousChar)
+    const currentIsDigit = currentChar !== null && /^\d$/.test(currentChar)
+
+    if (!previousIsDigit || !currentIsDigit) {
+        return [previousChar ?? empty, currentChar ?? empty]
+    }
+
+    const directionStep = pushesUp ? 1 : -1
+    const extraCount = 1 + ((index * 17 + total) % 2)
+    const frames = [previousChar]
+    let cursor = Number(previousChar)
+
+    for (let step = 0; step < extraCount; step += 1) {
+        cursor = (cursor + directionStep + 10) % 10
+        frames.push(String(cursor))
+    }
+
+    frames.push(currentChar)
+    return frames
+}
+
+function readLocalDebugOverride(): LocalDebugOverride {
+    if (typeof window === "undefined") {
+        return { active: false, delta: 0 }
+    }
+
+    const raw = window.localStorage.getItem(LOCAL_DEBUG_DELTA_STORAGE_KEY)
+    if (raw === null) {
+        return { active: false, delta: 0 }
+    }
+
+    const parsed = Number(raw)
+    return Number.isFinite(parsed)
+        ? { active: true, delta: parsed }
+        : { active: false, delta: 0 }
 }
 
 function getTier(value: number): TierSpec {
@@ -156,50 +257,144 @@ function usePremierRatingData(): CS2StoreState {
     return state
 }
 
-// ==================== ANIMATION HOOK ====================
-// Smoothly interpolates between rating values using easeOutCubic.
-// Skips animation on first load (null -> value) so it doesn't count up from 0.
-
-function useAnimatedNumber(
-    target: number | null,
-    duration: number,
-    enabled: boolean
-): number | null {
-    const [value, setValue] = React.useState<number | null>(target)
-    const valueRef = React.useRef<number | null>(target)
-    valueRef.current = value
-    const rafRef = React.useRef<number | null>(null)
+function useLocalDebugOverride(): LocalDebugOverride {
+    const [override, setOverride] = React.useState<LocalDebugOverride>({
+        active: false,
+        delta: 0,
+    })
 
     React.useEffect(() => {
-        if (target === null) {
-            setValue(null)
+        if (typeof window === "undefined") {
             return
         }
-        if (!enabled || valueRef.current === null) {
-            setValue(target)
-            return
-        }
-        const from = valueRef.current
-        if (from === target) return
 
-        const startTime = performance.now()
-        const step = (now: number) => {
-            const elapsed = now - startTime
-            const progress = Math.min(1, elapsed / duration)
-            const eased = 1 - Math.pow(1 - progress, 3)
-            setValue(from + (target - from) * eased)
-            if (progress < 1) {
-                rafRef.current = requestAnimationFrame(step)
-            }
+        const sync = () => {
+            setOverride(readLocalDebugOverride())
         }
-        rafRef.current = requestAnimationFrame(step)
+
+        const handleCustomEvent = (event: Event) => {
+            const detail = (
+                event as CustomEvent<{ delta?: unknown; active?: unknown }>
+            ).detail
+            const next = Number(detail?.delta)
+            const active =
+                typeof detail?.active === "boolean"
+                    ? detail.active
+                    : Number.isFinite(next)
+
+            setOverride(
+                active && Number.isFinite(next)
+                    ? { active: true, delta: next }
+                    : readLocalDebugOverride()
+            )
+        }
+
+        sync()
+        window.addEventListener("storage", sync)
+        window.addEventListener(LOCAL_DEBUG_DELTA_EVENT, handleCustomEvent as EventListener)
 
         return () => {
-            if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+            window.removeEventListener("storage", sync)
+            window.removeEventListener(LOCAL_DEBUG_DELTA_EVENT, handleCustomEvent as EventListener)
         }
-    }, [target, duration, enabled])
+    }, [])
 
-    return value
+    return override
+}
+
+function useRankChangeDisplay(
+    nextText: string,
+    enabled: boolean,
+    duration: number,
+    cacheKey: string
+) {
+    const [state, setState] = React.useState(() => {
+        const cached = transitionCache.get(cacheKey)
+        const shouldAnimate =
+            enabled &&
+            cached !== undefined &&
+            cached.text !== nextText &&
+            cached.text !== "—" &&
+            nextText !== "—"
+
+        return {
+            currentText: nextText,
+            previousText: shouldAnimate ? cached!.text : null,
+            key: shouldAnimate ? cached!.key + 1 : cached?.key ?? 0,
+            animationActive: shouldAnimate,
+        }
+    })
+    const timeoutRef = React.useRef<ReturnType<typeof globalThis.setTimeout> | null>(null)
+    const currentTextRef = React.useRef(state.currentText)
+
+    React.useEffect(() => {
+        transitionCache.set(cacheKey, {
+            text: state.currentText,
+            key: state.key,
+        })
+    }, [cacheKey, state.currentText, state.key])
+
+    React.useEffect(() => {
+        currentTextRef.current = state.currentText
+    }, [state.currentText])
+
+    React.useEffect(() => {
+        if (!state.animationActive || state.previousText === null) {
+            return
+        }
+
+        if (timeoutRef.current !== null) {
+            globalThis.clearTimeout(timeoutRef.current)
+        }
+
+        timeoutRef.current = globalThis.setTimeout(() => {
+            setState((previousState) => ({
+                ...previousState,
+                animationActive: false,
+            }))
+            timeoutRef.current = null
+        }, duration)
+
+        return () => {
+            if (timeoutRef.current !== null) {
+                globalThis.clearTimeout(timeoutRef.current)
+                timeoutRef.current = null
+            }
+        }
+    }, [duration, state.animationActive, state.previousText])
+
+    React.useEffect(() => {
+        const currentText = currentTextRef.current
+
+        if (currentText === nextText) {
+            return
+        }
+
+        if (timeoutRef.current !== null) {
+            globalThis.clearTimeout(timeoutRef.current)
+            timeoutRef.current = null
+        }
+
+        const shouldAnimate = enabled && currentText !== "—" && nextText !== "—"
+
+        setState((previousState) => ({
+            currentText: nextText,
+            previousText: shouldAnimate ? currentText : null,
+            key: shouldAnimate ? previousState.key + 1 : previousState.key,
+            animationActive: shouldAnimate,
+        }))
+
+        currentTextRef.current = nextText
+
+        return () => {
+            if (timeoutRef.current !== null) {
+                globalThis.clearTimeout(timeoutRef.current)
+                timeoutRef.current = null
+            }
+        }
+    }, [duration, enabled, nextText])
+
+    return state
 }
 
 // ==================== COMPONENT ====================
@@ -224,6 +419,190 @@ function getBadgeDimensions(fontSize: number) {
     }
 }
 
+function renderRankText(
+    currentText: string,
+    previousText: string | null,
+    animationActive: boolean,
+    fontStyle: Record<string, unknown>,
+    numberFontSize: number,
+    textSlantDeg: number,
+    color: string,
+    glowStrength: number,
+    glowColor: string,
+    durationSeconds: number
+) {
+    const { major, minor } = splitRatingText(currentText)
+    const previousParts = previousText ? splitRatingText(previousText) : null
+    const currentValue = parseRatingNumber(currentText)
+    const previousValue = previousText ? parseRatingNumber(previousText) : null
+    const pushesUp =
+        previousValue !== null && currentValue !== null ? currentValue > previousValue : true
+    const minorFontSize = Math.round(numberFontSize * 0.74)
+    const majorTokens = major.split("")
+    const previousMajorTokens = previousParts ? previousParts.major.split("") : []
+    const maxMajorLength = Math.max(majorTokens.length, previousMajorTokens.length)
+    const currentMajorSlots = padStartTokens(majorTokens, maxMajorLength)
+    const previousMajorSlots = padStartTokens(previousMajorTokens, maxMajorLength)
+    const minorTokens = minor ? minor.split("") : []
+    const previousMinorTokens = previousParts?.minor ? previousParts.minor.split("") : []
+    const maxMinorLength = Math.max(minorTokens.length, previousMinorTokens.length)
+    const currentMinorSlots = minorTokens.concat(Array(Math.max(0, maxMinorLength - minorTokens.length)).fill(null))
+    const previousMinorSlots = previousMinorTokens.concat(
+        Array(Math.max(0, maxMinorLength - previousMinorTokens.length)).fill(null)
+    )
+
+    const renderSlot = (
+        currentChar: string | null,
+        previousChar: string | null,
+        index: number,
+        total: number,
+        fontSize: number
+    ) => {
+        const changed = previousText !== null && previousChar !== currentChar
+        const shouldAnimateSlot = changed && animationActive
+        const delay = shouldAnimateSlot ? slotDelay(index, total) : 0
+        const slotHeight = fontSize * 1.1
+        const sizingChar = currentChar ?? previousChar ?? "\u00A0"
+
+        const rollFrames = buildDigitRoll(previousChar, currentChar, index, total, pushesUp)
+        const changedStack = pushesUp ? rollFrames : [...rollFrames].reverse()
+        const stack = changed ? changedStack : [currentChar ?? "\u00A0"]
+        const travelDistance = (changedStack.length - 1) * slotHeight
+        const initialY = pushesUp ? 0 : -travelDistance
+        const targetY = changed ? (pushesUp ? -travelDistance : 0) : 0
+
+        return (
+            <span
+                key={`animated-${index}-${currentChar}-${previousChar}`}
+                style={{
+                    position: "relative",
+                    display: "inline-grid",
+                    justifyItems: "stretch",
+                    alignItems: "end",
+                    height: slotHeight,
+                    overflow: "hidden",
+                }}
+            >
+                <span
+                    style={{
+                        gridArea: "1 / 1",
+                        visibility: "hidden",
+                        display: "inline-flex",
+                        alignItems: "flex-end",
+                        justifyContent: "center",
+                        height: slotHeight,
+                    }}
+                >
+                    {sizingChar}
+                </span>
+                <motion.span
+                    initial={shouldAnimateSlot ? { y: initialY } : false}
+                    animate={{ y: targetY }}
+                    transition={{
+                        duration: shouldAnimateSlot ? durationSeconds : 0,
+                        ease: [0.2, 0.9, 0.2, 1],
+                        delay,
+                    }}
+                    style={{
+                        gridArea: "1 / 1",
+                        width: "100%",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "stretch",
+                    }}
+                >
+                    {stack.map((char, frameIndex) => (
+                        <span
+                            key={`${index}-${frameIndex}-${char}`}
+                            style={{
+                                width: "100%",
+                                height: slotHeight,
+                                display: "inline-flex",
+                                alignItems: "flex-end",
+                                justifyContent: "center",
+                            }}
+                        >
+                            {char}
+                        </span>
+                    ))}
+                </motion.span>
+            </span>
+        )
+    }
+
+    return (
+        <motion.div
+            initial={false}
+            animate={{
+                color,
+                textShadow: `0 0 ${8 + glowStrength * 10}px ${hexToRgba(glowColor, 0.5)}`,
+            }}
+            transition={{
+                duration: durationSeconds,
+                ease: [0.22, 1, 0.36, 1],
+            }}
+            style={{
+                fontVariantNumeric: "tabular-nums",
+                fontFeatureSettings: '"tnum" 1, "lnum" 1',
+                whiteSpace: "nowrap",
+                transform: `skewX(-${textSlantDeg}deg)`,
+                transformOrigin: "center",
+                display: "inline-flex",
+                alignItems: "flex-end",
+                ...fontStyle,
+                fontSize: numberFontSize,
+            }}
+        >
+            <span
+                style={{
+                    display: "inline-flex",
+                    alignItems: "flex-end",
+                }}
+            >
+                {currentMajorSlots.map((char, index) =>
+                    renderSlot(
+                        char,
+                        previousMajorSlots[index] ?? null,
+                        index,
+                        currentMajorSlots.length,
+                        numberFontSize
+                    )
+                )}
+            </span>
+            {minor ? (
+                <span
+                    style={{
+                        fontSize: minorFontSize,
+                        lineHeight: 0.92,
+                        display: "inline-flex",
+                        alignItems: "flex-end",
+                        transform: "translateY(-0.03em)",
+                        marginLeft: "0.01em",
+                    }}
+                >
+                    <span
+                        style={{
+                            display: "inline-flex",
+                            justifyContent: "center",
+                        }}
+                    >
+                        ,
+                    </span>
+                    {currentMinorSlots.map((char, index) =>
+                        renderSlot(
+                            char,
+                            previousMinorSlots[index] ?? null,
+                            maxMajorLength + index,
+                            maxMajorLength + currentMinorSlots.length,
+                            minorFontSize
+                        )
+                    )}
+                </span>
+            ) : null}
+        </motion.div>
+    )
+}
+
 export default function CS2PremierRank(props: any) {
     const {
         previewValue,
@@ -241,40 +620,75 @@ export default function CS2PremierRank(props: any) {
     const cs2 = usePremierRatingData()
     const liveRating: number | null =
         typeof cs2?.data?.premierRating === "number" ? cs2.data.premierRating : null
+    const localDebugOverride = useLocalDebugOverride()
 
     // 2. Decide what to display: live data > canvas preview > waiting.
     const renderTarget = RenderTarget.current()
     const isCanvas =
         renderTarget === RenderTarget.canvas || renderTarget === RenderTarget.thumbnail
-    const targetRating: number | null =
-        liveRating !== null
-            ? liveRating
-            : usePreviewOnCanvas && isCanvas
-                ? previewValue
+    const baseRating: number | null =
+        usePreviewOnCanvas && isCanvas
+            ? previewValue
+            : liveRating !== null
+                ? liveRating
                 : null
-    // 3. Animate number transitions.
-    const animatedRating = useAnimatedNumber(targetRating, animateDuration, animateNumber)
-    const tier = getTier(animatedRating ?? 0)
-    const displayText =
-        animatedRating !== null ? formatRating(animatedRating) : fallbackText
+    const localBaseRef = React.useRef<number | null>(null)
+    React.useEffect(() => {
+        if (!localDebugOverride.active) {
+            localBaseRef.current = null
+            return
+        }
+
+        if (localBaseRef.current === null) {
+            localBaseRef.current = baseRating ?? 0
+        }
+    }, [baseRating, localDebugOverride.active])
+
+    const targetRating: number | null = localDebugOverride.active
+        ? Math.max(0, (localBaseRef.current ?? baseRating ?? 0) + localDebugOverride.delta)
+        : baseRating
+    // 3. Prepare the current display text and CS2-style change animation.
+    const displayText = targetRating !== null ? formatRating(targetRating) : fallbackText
+    const transitionCacheKey =
+        usePreviewOnCanvas && isCanvas ? "cs2-rank-preview-canvas" : "cs2-rank-live"
+    const transitionState = useRankChangeDisplay(
+        displayText,
+        animateNumber,
+        animateDuration,
+        transitionCacheKey
+    )
+    const currentTier = getTier(parseRatingNumber(transitionState.currentText) ?? targetRating ?? 0)
     const fontStyle = numberFont ?? {}
     const numberFontSize =
         typeof fontStyle.fontSize === "number"
             ? fontStyle.fontSize
             : Number.parseFloat(String(fontStyle.fontSize ?? 28)) || 28
+    const stripeOpacities = [1, 0.82, 0.6]
     const dimensions = getBadgeDimensions(numberFontSize)
+    const rollDurationSeconds = animateDuration / 1000
+    const stripeRailWidth =
+        dimensions.leftRailPadding +
+        stripeOpacities.length * dimensions.stripeWidth +
+        Math.max(0, stripeOpacities.length - 1) * dimensions.stripeGap
+    const tierTransition = {
+        duration: rollDurationSeconds,
+        ease: [0.22, 1, 0.36, 1] as [number, number, number, number],
+    }
 
-    // 4. Flash on tier boundary crossings.
+    // 4. Trigger the sweep whenever the displayed rank actually changes.
     const [flashKey, setFlashKey] = React.useState(0)
-    const prevTierKey = React.useRef<TierKey | null>(null)
+    const prevDisplayText = React.useRef<string | null>(null)
     React.useEffect(() => {
-        if (prevTierKey.current !== null && prevTierKey.current !== tier.key) {
+        if (
+            prevDisplayText.current !== null &&
+            prevDisplayText.current !== displayText &&
+            prevDisplayText.current !== fallbackText &&
+            displayText !== fallbackText
+        ) {
             setFlashKey((k) => k + 1)
         }
-        prevTierKey.current = tier.key
-    }, [tier.key])
-
-    const stripeOpacities = [1, 0.82, 0.6]
+        prevDisplayText.current = displayText
+    }, [displayText, fallbackText])
 
     return (
         <div
@@ -284,7 +698,7 @@ export default function CS2PremierRank(props: any) {
             }}
         >
             <style>{`
-                @keyframes cs2-flash { 0% { opacity: 0; } 12% { opacity: 1; } 100% { opacity: 0; } }
+                @keyframes cs2-flash { 0% { opacity: 0; } 14% { opacity: 1; } 100% { opacity: 0; } }
             `}</style>
 
             {/* BADGE */}
@@ -293,7 +707,6 @@ export default function CS2PremierRank(props: any) {
                     position: "relative",
                     width: dimensions.width,
                     height: dimensions.height,
-                    filter: `drop-shadow(0 0 ${14 + glowStrength * 18}px ${hexToRgba(tier.glow, 0.22 + glowStrength * 0.22)})`,
                 }}
             >
                 <div
@@ -302,86 +715,128 @@ export default function CS2PremierRank(props: any) {
                         inset: 0,
                         transform: `skewX(-${slantDeg}deg)`,
                         borderRadius: dimensions.borderRadius,
-                        border: `${dimensions.borderWidth}px solid ${hexToRgba(tier.edge, 0.9)}`,
-                        background: `linear-gradient(135deg, ${tier.start} 0%, ${tier.middle} 52%, ${tier.end} 100%)`,
-                        boxShadow: `inset 0 1px 0 ${hexToRgba(tier.stripe, 0.35)}, inset 0 -10px 24px ${hexToRgba("#000000", 0.28)}`,
                         overflow: "hidden",
-                        display: "flex",
-                        alignItems: "center",
                     }}
                 >
-                    <div
+                    <motion.div
+                        initial={false}
+                        animate={{
+                            borderColor: hexToRgba(currentTier.edge, 0.9),
+                            background: `linear-gradient(135deg, ${currentTier.start} 0%, ${currentTier.middle} 52%, ${currentTier.end} 100%)`,
+                            boxShadow: `inset 0 1px 0 ${hexToRgba(currentTier.stripe, 0.35)}, inset 0 -10px 24px ${hexToRgba("#000000", 0.28)}`,
+                            filter: `drop-shadow(0 0 ${14 + glowStrength * 18}px ${hexToRgba(currentTier.glow, 0.22 + glowStrength * 0.22)})`,
+                        }}
+                        transition={tierTransition}
                         style={{
                             position: "absolute",
                             inset: 0,
-                            pointerEvents: "none",
-                            background:
-                                "linear-gradient(110deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0.06) 20%, rgba(255,255,255,0) 42%)",
-                            mixBlendMode: "screen",
-                        }}
-                    />
-                    <div
-                        style={{
-                            position: "absolute",
-                            inset: 0,
-                            pointerEvents: "none",
-                            background:
-                                "linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0) 52%, rgba(0,0,0,0.22) 100%)",
-                        }}
-                    />
-
-                    <div
-                        style={{
-                            display: "flex",
-                            gap: dimensions.stripeGap,
-                            alignItems: "center",
-                            paddingLeft: dimensions.leftRailPadding,
-                            height: "100%",
-                            flexShrink: 0,
-                        }}
-                    >
-                        {stripeOpacities.map((opacity, i) => (
-                            <div
-                                key={i}
-                                style={{
-                                    width: dimensions.stripeWidth,
-                                    height: dimensions.stripeHeight,
-                                    background: `linear-gradient(180deg, ${tier.stripe} 0%, ${tier.edge} 100%)`,
-                                    opacity,
-                                    borderRadius: 1,
-                                    boxShadow:
-                                        i === 0
-                                            ? `0 0 8px ${hexToRgba(tier.glow, 0.55)}`
-                                            : "none",
-                                }}
-                            />
-                        ))}
-                    </div>
-
-                    <div
-                        style={{
-                            flex: 1,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            transform: `skewX(${slantDeg}deg)`,
-                            paddingRight: dimensions.rightPadding,
-                            paddingLeft: dimensions.innerLeftPadding,
+                            borderRadius: dimensions.borderRadius,
+                            border: `${dimensions.borderWidth}px solid ${hexToRgba(currentTier.edge, 0.9)}`,
+                            background: `linear-gradient(135deg, ${currentTier.start} 0%, ${currentTier.middle} 52%, ${currentTier.end} 100%)`,
+                            boxShadow: `inset 0 1px 0 ${hexToRgba(currentTier.stripe, 0.35)}, inset 0 -10px 24px ${hexToRgba("#000000", 0.28)}`,
+                            filter: `drop-shadow(0 0 ${14 + glowStrength * 18}px ${hexToRgba(currentTier.glow, 0.22 + glowStrength * 0.22)})`,
+                            overflow: "hidden",
                         }}
                     >
                         <div
                             style={{
-                                color: tier.text,
-                                textShadow: `0 0 ${8 + glowStrength * 10}px ${hexToRgba(tier.glow, 0.5)}`,
-                                fontVariantNumeric: "tabular-nums",
-                                whiteSpace: "nowrap",
-                                transform: `skewX(-${textSlantDeg}deg)`,
-                                transformOrigin: "center",
-                                ...fontStyle,
-                                fontSize: numberFontSize,
+                                position: "absolute",
+                                inset: 0,
+                                pointerEvents: "none",
+                                background:
+                                    "linear-gradient(110deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0.06) 20%, rgba(255,255,255,0) 42%)",
+                                mixBlendMode: "screen",
+                            }}
+                        />
+                        <div
+                            style={{
+                                position: "absolute",
+                                inset: 0,
+                                pointerEvents: "none",
+                                background:
+                                    "linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0) 52%, rgba(0,0,0,0.22) 100%)",
+                            }}
+                        />
+                        <div
+                            style={{
+                                position: "absolute",
+                                left: 0,
+                                top: 0,
+                                bottom: 0,
+                                display: "flex",
+                                gap: dimensions.stripeGap,
+                                alignItems: "center",
+                                paddingLeft: dimensions.leftRailPadding,
+                                flexShrink: 0,
                             }}
                         >
-                            {displayText}
+                            {stripeOpacities.map((opacity, i) => (
+                                <motion.div
+                                    key={i}
+                                    initial={false}
+                                    animate={{
+                                        background: `linear-gradient(180deg, ${currentTier.stripe} 0%, ${currentTier.edge} 100%)`,
+                                        boxShadow:
+                                            i === 0
+                                                ? `0 0 8px ${hexToRgba(currentTier.glow, 0.55)}`
+                                                : "none",
+                                    }}
+                                    transition={tierTransition}
+                                    style={{
+                                        width: dimensions.stripeWidth,
+                                        height: dimensions.stripeHeight,
+                                        background: `linear-gradient(180deg, ${currentTier.stripe} 0%, ${currentTier.edge} 100%)`,
+                                        opacity,
+                                        borderRadius: 1,
+                                        boxShadow:
+                                            i === 0
+                                                ? `0 0 8px ${hexToRgba(currentTier.glow, 0.55)}`
+                                                : "none",
+                                    }}
+                                />
+                            ))}
+                        </div>
+                    </motion.div>
+
+                    <div
+                        style={{
+                            position: "absolute",
+                            inset: 0,
+                            display: "flex",
+                            alignItems: "center",
+                        }}
+                    >
+                        <div
+                            style={{
+                                width: stripeRailWidth,
+                                flexShrink: 0,
+                            }}
+                        />
+                        <div
+                            style={{
+                                flex: 1,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                transform: `skewX(${slantDeg}deg)`,
+                                paddingRight: dimensions.rightPadding,
+                                paddingLeft: dimensions.innerLeftPadding,
+                                position: "relative",
+                                overflow: "hidden",
+                            }}
+                        >
+                            {renderRankText(
+                                transitionState.currentText,
+                                transitionState.previousText,
+                                transitionState.animationActive,
+                                fontStyle,
+                                numberFontSize,
+                                textSlantDeg,
+                                currentTier.text,
+                                glowStrength,
+                                currentTier.glow,
+                                rollDurationSeconds
+                            )}
                         </div>
                     </div>
 
@@ -391,7 +846,7 @@ export default function CS2PremierRank(props: any) {
                             position: "absolute",
                             inset: 0,
                             pointerEvents: "none",
-                            background: `linear-gradient(90deg, ${hexToRgba(tier.stripe, 0)} 0%, ${hexToRgba(tier.stripe, 0.55)} 50%, ${hexToRgba(tier.stripe, 0)} 100%)`,
+                            background: `linear-gradient(90deg, ${hexToRgba(currentTier.stripe, 0)} 0%, ${hexToRgba(currentTier.stripe, 0.55)} 50%, ${hexToRgba(currentTier.stripe, 0)} 100%)`,
                             opacity: 0,
                             animation:
                                 flashKey > 0 ? "cs2-flash 900ms ease-out" : undefined,
@@ -410,7 +865,7 @@ CS2PremierRank.defaultProps = {
     usePreviewOnCanvas: true,
     fallbackText: "—",
     animateNumber: true,
-    animateDuration: 900,
+    animateDuration: 1050,
     numberFont: {
         fontFamily: "Orbitron",
         fontSize: 28,
@@ -454,7 +909,7 @@ addPropertyControls(CS2PremierRank, {
     animateDuration: {
         type: ControlType.Number,
         title: "Anim (ms)",
-        defaultValue: 900,
+        defaultValue: 1050,
         min: 100,
         max: 3000,
         step: 50,
