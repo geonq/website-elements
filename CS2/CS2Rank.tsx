@@ -1,41 +1,30 @@
 // CS2Rank.tsx — Framer code component for the CS2 Premier rank badge.
 //
-// Pattern mirrors SpotifyNowPlaying: plain function component, single default
-// export, property controls attached directly. The live data hook is embedded
-// here so Framer can import the component as a single portable code file.
+// Plain Framer code component with the live data hook embedded so the badge
+// can be imported as a single portable code file.
+//
+// What this file does:
+//   1. Polls a Cloudflare Worker every 60s for the current Premier rating.
+//   2. Renders a CS2-styled badge with tier-based coloring (gray → gold).
+//   3. Animates rating changes with a digit-by-digit slot-machine roll.
+//   4. Cross-fades the badge gradient/glow as the rating crosses tier
+//      boundaries (e.g. Purple → Pink at 20,000).
+//   5. Flashes a sweep across the badge whenever the displayed value changes.
 
 import * as React from "react"
 import { addPropertyControls, ControlType, RenderTarget } from "framer"
 import { motion } from "framer-motion"
 
+// ==================== CONSTANTS ====================
+
 const WORKER_URL = "https://cs2store.domkegeorg2017.workers.dev/cs2/profile"
 const POLL_INTERVAL_MS = 60_000
-const LOCAL_DEBUG_DELTA_STORAGE_KEY = "cs2-rank-local-debug-delta"
-const LOCAL_DEBUG_DELTA_EVENT = "cs2-rank-local-debug-delta-change"
 
-type TransitionCacheEntry = {
-    text: string
-    key: number
-}
-
-const transitionCache = new Map<string, TransitionCacheEntry>()
+// ==================== TYPES ====================
 
 type CS2Data = {
     premierRating: number | null
 }
-
-type CS2StoreState = {
-    data: CS2Data | null
-    loading: boolean
-    error: string | null
-}
-
-type LocalDebugOverride = {
-    active: boolean
-    delta: number
-}
-
-// ==================== TIERS ====================
 
 type TierKey = "gray" | "lightBlue" | "blue" | "purple" | "pink" | "red" | "gold"
 
@@ -44,15 +33,19 @@ type TierSpec = {
     name: string
     min: number
     max: number
-    text: string
-    edge: string
-    stripe: string
-    glow: string
-    start: string
-    middle: string
-    end: string
+    text: string    // primary number color
+    edge: string    // border + stripe outline
+    stripe: string  // stripe highlight (top of gradient)
+    glow: string    // outer drop-shadow tint
+    start: string   // gradient stop 0%
+    middle: string  // gradient stop 52%
+    end: string     // gradient stop 100%
 }
 
+// All seven CS2 Premier tiers with their official(-ish) color palettes.
+// Min/max are inclusive. Each tier has the same gradient structure (3 stops at
+// 0/52/100%) which lets framer-motion smoothly interpolate between them when
+// the rating crosses a boundary.
 const TIERS: TierSpec[] = [
     { key: "gray",      name: "Gray",       min: 0,     max: 4999,     text: "#E8EDF8", edge: "#C9D2E4", stripe: "#F3F7FF", glow: "#C6D0E1", start: "#5E6678", middle: "#42495B", end: "#2D3342" },
     { key: "lightBlue", name: "Light Blue", min: 5000,  max: 9999,     text: "#8ED9FF", edge: "#79CBFF", stripe: "#AEE9FF", glow: "#2AABFF", start: "#265A84", middle: "#1D4B77", end: "#13314E" },
@@ -65,6 +58,8 @@ const TIERS: TierSpec[] = [
 
 // ==================== HELPERS ====================
 
+// Convert "#RRGGBB" or "#RGB" to "rgba(r,g,b,a)". Used to add alpha channel
+// to tier colors when we want translucency (borders, glows, inset shadows).
 function hexToRgba(hex: string, alpha: number): string {
     const h = hex.replace("#", "")
     const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h
@@ -74,12 +69,16 @@ function hexToRgba(hex: string, alpha: number): string {
     return `rgba(${r},${g},${b},${alpha})`
 }
 
+// Format a rating as "18,520" with commas as thousand separators.
 function formatRating(value: number): string {
     return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(
         Math.max(0, Math.round(value))
     )
 }
 
+// Split "18,520" into { major: "18", minor: "520" } so we can render the
+// thousands part smaller (matching the in-game CS2 badge styling).
+// "1234" with no comma → { major: "1234", minor: null }
 function splitRatingText(text: string) {
     const parts = text.split(",")
 
@@ -93,6 +92,9 @@ function splitRatingText(text: string) {
     }
 }
 
+// Strip non-digit characters and parse to a number, returning null for
+// unparseable input. Used to detect direction (gain vs loss) for the digit
+// roll animation.
 function parseRatingNumber(text: string): number | null {
     const normalized = text.replace(/[^\d-]/g, "")
     if (normalized === "") {
@@ -103,6 +105,10 @@ function parseRatingNumber(text: string): number | null {
     return Number.isFinite(parsed) ? parsed : null
 }
 
+// Left-pad a token array with nulls so two strings of different lengths can be
+// rendered as aligned slots. e.g. previous="9" (1 digit) and next="10"
+// (2 digits) → previous becomes [null, "9"] aligned with next ["1", "0"].
+// This way the new leftmost digit ("1") animates in from a blank slot.
 function padStartTokens(tokens: string[], length: number): Array<string | null> {
     return Array.from({ length }, (_, index) => {
         const offset = length - tokens.length
@@ -110,12 +116,34 @@ function padStartTokens(tokens: string[], length: number): Array<string | null> 
     })
 }
 
+// Per-slot stagger delay in seconds. The rightmost digit starts first, the
+// leftmost last — creating a right-to-left wave (like a slot machine settling
+// from the cents column inward). The deterministic jitter keeps the wave from
+// looking too mechanical without introducing actual randomness (which would
+// re-roll on every render).
 function slotDelay(index: number, total: number) {
     const fromRight = total - index - 1
     const deterministicJitter = ((index * 37) % 7) * 0.04
     return Math.min(0.18, 0.03 + fromRight * 0.02 + deterministicJitter)
 }
 
+function maxSlotDelay(text: string) {
+    const { major, minor } = splitRatingText(text)
+    const total = major.length + (minor ? minor.length : 0)
+    let maxDelay = 0
+
+    for (let index = 0; index < total; index += 1) {
+        maxDelay = Math.max(maxDelay, slotDelay(index, total))
+    }
+
+    return maxDelay
+}
+
+// Build the sequence of frames a single digit cycles through during a roll.
+// For unchanged digits, returns a single-frame array (no animation).
+// For digit→digit transitions, returns a slot-machine spinner that overshoots
+// the target and lands on it (e.g. 9→0 might cycle as 9, 0, 1, 0).
+// For digit→non-digit (or vice versa), returns a simple two-frame swap.
 function buildDigitRoll(
     previousChar: string | null,
     currentChar: string | null,
@@ -123,7 +151,7 @@ function buildDigitRoll(
     total: number,
     pushesUp: boolean
 ): string[] {
-    const empty = "\u00A0"
+    const empty = "\u00A0" // non-breaking space — preserves slot width
 
     if (previousChar === currentChar) {
         return [currentChar ?? empty]
@@ -132,10 +160,14 @@ function buildDigitRoll(
     const previousIsDigit = previousChar !== null && /^\d$/.test(previousChar)
     const currentIsDigit = currentChar !== null && /^\d$/.test(currentChar)
 
+    // Comma↔digit, blank↔digit, etc — just swap, don't try to "roll" through.
     if (!previousIsDigit || !currentIsDigit) {
         return [previousChar ?? empty, currentChar ?? empty]
     }
 
+    // Build a digit-sequence path from previous to current. Direction depends
+    // on whether the overall rating went up or down. extraCount adds 1-2
+    // overshoot frames for the slot-machine feel.
     const directionStep = pushesUp ? 1 : -1
     const extraCount = 1 + ((index * 17 + total) % 2)
     const frames = [previousChar]
@@ -150,57 +182,32 @@ function buildDigitRoll(
     return frames
 }
 
-function readLocalDebugOverride(): LocalDebugOverride {
-    if (typeof window === "undefined") {
-        return { active: false, delta: 0 }
-    }
-
-    const raw = window.localStorage.getItem(LOCAL_DEBUG_DELTA_STORAGE_KEY)
-    if (raw === null) {
-        return { active: false, delta: 0 }
-    }
-
-    const parsed = Number(raw)
-    return Number.isFinite(parsed)
-        ? { active: true, delta: parsed }
-        : { active: false, delta: 0 }
-}
-
+// Find the tier whose [min, max] range contains the given rating.
 function getTier(value: number): TierSpec {
     return TIERS.find((t) => value >= t.min && value <= t.max) ?? TIERS[0]
 }
 
+// Type-guard for narrowing `unknown` payloads from the Worker fetch.
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null
 }
 
-function usePremierRatingData(): CS2StoreState {
-    const [state, setState] = React.useState<CS2StoreState>({
-        data: null,
-        loading: true,
-        error: null,
-    })
+// ==================== HOOKS ====================
+
+function usePremierRatingData(): CS2Data | null {
+    const [data, setData] = React.useState<CS2Data | null>(null)
 
     React.useEffect(() => {
-        let active = true
+        let active = true // prevents setState after unmount
 
         const load = async () => {
-            setState((current) => ({
-                data: current.data,
-                loading: current.data === null,
-                error: null,
-            }))
-
             try {
                 const response = await fetch(WORKER_URL, {
                     method: "GET",
-                    headers: {
-                        Accept: "application/json",
-                    },
+                    headers: { Accept: "application/json" },
                 })
 
                 let payload: unknown = null
-
                 try {
                     payload = await response.json()
                 } catch {
@@ -212,7 +219,6 @@ function usePremierRatingData(): CS2StoreState {
                         isRecord(payload) && typeof payload.error === "string"
                             ? payload.error
                             : `Request failed with status ${response.status}`
-
                     throw new Error(message)
                 }
 
@@ -222,24 +228,14 @@ function usePremierRatingData(): CS2StoreState {
 
                 if (!active) return
 
-                setState({
-                    data: {
-                        premierRating:
-                            typeof payload.premierRating === "number"
-                                ? payload.premierRating
-                                : null,
-                    },
-                    loading: false,
-                    error: null,
+                setData({
+                    premierRating:
+                        typeof payload.premierRating === "number"
+                            ? payload.premierRating
+                            : null,
                 })
             } catch (error) {
                 if (!active) return
-
-                setState((current) => ({
-                    data: current.data,
-                    loading: false,
-                    error: error instanceof Error ? error.message : "Unknown CS2 fetch error.",
-                }))
             }
         }
 
@@ -254,89 +250,34 @@ function usePremierRatingData(): CS2StoreState {
         }
     }, [])
 
-    return state
+    return data
 }
 
-function useLocalDebugOverride(): LocalDebugOverride {
-    const [override, setOverride] = React.useState<LocalDebugOverride>({
-        active: false,
-        delta: 0,
-    })
-
-    React.useEffect(() => {
-        if (typeof window === "undefined") {
-            return
-        }
-
-        const sync = () => {
-            setOverride(readLocalDebugOverride())
-        }
-
-        const handleCustomEvent = (event: Event) => {
-            const detail = (
-                event as CustomEvent<{ delta?: unknown; active?: unknown }>
-            ).detail
-            const next = Number(detail?.delta)
-            const active =
-                typeof detail?.active === "boolean"
-                    ? detail.active
-                    : Number.isFinite(next)
-
-            setOverride(
-                active && Number.isFinite(next)
-                    ? { active: true, delta: next }
-                    : readLocalDebugOverride()
-            )
-        }
-
-        sync()
-        window.addEventListener("storage", sync)
-        window.addEventListener(LOCAL_DEBUG_DELTA_EVENT, handleCustomEvent as EventListener)
-
-        return () => {
-            window.removeEventListener("storage", sync)
-            window.removeEventListener(LOCAL_DEBUG_DELTA_EVENT, handleCustomEvent as EventListener)
-        }
-    }, [])
-
-    return override
-}
-
+// State machine for the rank-change roll animation.
+//
+// State shape:
+//   currentText:     the rating string we're displaying right now
+//   previousText:    the string we just rolled FROM (null if no animation)
+//   animationActive: whether we're currently mid-roll
+//
+// Two effects manage the lifecycle:
+//   1. Detect text changes and kick off a new animation (setState with
+//      previousText set so the next render rolls).
+//   2. Schedule the "animation complete" timeout that flips animationActive
+//      back to false once the digits have settled.
+//
 function useRankChangeDisplay(
     nextText: string,
     enabled: boolean,
     duration: number,
-    cacheKey: string
+    settleDelayMs: number
 ) {
-    const [state, setState] = React.useState(() => {
-        const cached = transitionCache.get(cacheKey)
-        const shouldAnimate =
-            enabled &&
-            cached !== undefined &&
-            cached.text !== nextText &&
-            cached.text !== "—" &&
-            nextText !== "—"
-
-        return {
-            currentText: nextText,
-            previousText: shouldAnimate ? cached!.text : null,
-            key: shouldAnimate ? cached!.key + 1 : cached?.key ?? 0,
-            animationActive: shouldAnimate,
-        }
-    })
+    const [state, setState] = React.useState(() => ({
+        currentText: nextText,
+        previousText: null as string | null,
+        animationActive: false,
+    }))
     const timeoutRef = React.useRef<ReturnType<typeof globalThis.setTimeout> | null>(null)
-    const currentTextRef = React.useRef(state.currentText)
-
-    React.useEffect(() => {
-        transitionCache.set(cacheKey, {
-            text: state.currentText,
-            key: state.key,
-        })
-    }, [cacheKey, state.currentText, state.key])
-
-    React.useEffect(() => {
-        currentTextRef.current = state.currentText
-    }, [state.currentText])
 
     React.useEffect(() => {
         if (!state.animationActive || state.previousText === null) {
@@ -350,10 +291,11 @@ function useRankChangeDisplay(
         timeoutRef.current = globalThis.setTimeout(() => {
             setState((previousState) => ({
                 ...previousState,
+                previousText: null,
                 animationActive: false,
             }))
             timeoutRef.current = null
-        }, duration)
+        }, duration + settleDelayMs + 40)
 
         return () => {
             if (timeoutRef.current !== null) {
@@ -361,12 +303,10 @@ function useRankChangeDisplay(
                 timeoutRef.current = null
             }
         }
-    }, [duration, state.animationActive, state.previousText])
+    }, [duration, settleDelayMs, state.animationActive, state.previousText])
 
     React.useEffect(() => {
-        const currentText = currentTextRef.current
-
-        if (currentText === nextText) {
+        if (state.currentText === nextText) {
             return
         }
 
@@ -375,35 +315,22 @@ function useRankChangeDisplay(
             timeoutRef.current = null
         }
 
-        const shouldAnimate = enabled && currentText !== "—" && nextText !== "—"
+        const shouldAnimate = enabled && state.currentText !== "—" && nextText !== "—"
 
-        setState((previousState) => ({
+        setState({
             currentText: nextText,
-            previousText: shouldAnimate ? currentText : null,
-            key: shouldAnimate ? previousState.key + 1 : previousState.key,
+            previousText: shouldAnimate ? state.currentText : null,
             animationActive: shouldAnimate,
-        }))
-
-        currentTextRef.current = nextText
-
-        return () => {
-            if (timeoutRef.current !== null) {
-                globalThis.clearTimeout(timeoutRef.current)
-                timeoutRef.current = null
-            }
-        }
-    }, [duration, enabled, nextText])
+        })
+    }, [enabled, nextText, state.currentText])
 
     return state
 }
 
-// ==================== COMPONENT ====================
-//
-// @framerSupportedLayoutWidth fixed
-// @framerSupportedLayoutHeight auto
-// @framerIntrinsicWidth 140
-// @framerIntrinsicHeight 50
+// ==================== LAYOUT MATH ====================
 
+// All badge dimensions scale off the font size. These multipliers were
+// hand-tuned against reference screenshots of the in-game CS2 badge.
 function getBadgeDimensions(fontSize: number) {
     return {
         width: Math.round(fontSize * 4.95),
@@ -419,6 +346,12 @@ function getBadgeDimensions(fontSize: number) {
     }
 }
 
+// ==================== TEXT RENDERING ====================
+
+// Renders the rank number with per-digit slot-machine animation.
+// Each digit is its own <span> with overflow:hidden, containing a vertical
+// stack of frames that translates upward (or downward) to reveal each frame.
+// The motion.span handles the actual easing.
 function renderRankText(
     currentText: string,
     previousText: string | null,
@@ -433,24 +366,36 @@ function renderRankText(
 ) {
     const { major, minor } = splitRatingText(currentText)
     const previousParts = previousText ? splitRatingText(previousText) : null
+
+    // Determine roll direction so digits scroll the "right way".
+    // Up means rating gained (digits roll upward, ascending).
     const currentValue = parseRatingNumber(currentText)
     const previousValue = previousText ? parseRatingNumber(previousText) : null
     const pushesUp =
-        previousValue !== null && currentValue !== null ? currentValue > previousValue : true
+        previousValue !== null && currentValue !== null
+            ? currentValue > previousValue
+            : true // default to "gained" feel when direction is ambiguous
+
+    // The thousands part renders smaller (CS2 styling convention).
     const minorFontSize = Math.round(numberFontSize * 0.74)
+
     const majorTokens = major.split("")
     const previousMajorTokens = previousParts ? previousParts.major.split("") : []
     const maxMajorLength = Math.max(majorTokens.length, previousMajorTokens.length)
     const currentMajorSlots = padStartTokens(majorTokens, maxMajorLength)
     const previousMajorSlots = padStartTokens(previousMajorTokens, maxMajorLength)
+
     const minorTokens = minor ? minor.split("") : []
     const previousMinorTokens = previousParts?.minor ? previousParts.minor.split("") : []
     const maxMinorLength = Math.max(minorTokens.length, previousMinorTokens.length)
-    const currentMinorSlots = minorTokens.concat(Array(Math.max(0, maxMinorLength - minorTokens.length)).fill(null))
+    const currentMinorSlots = minorTokens.concat(
+        Array(Math.max(0, maxMinorLength - minorTokens.length)).fill(null)
+    )
     const previousMinorSlots = previousMinorTokens.concat(
         Array(Math.max(0, maxMinorLength - previousMinorTokens.length)).fill(null)
     )
 
+    // renderSlot draws a single digit cell with its own roll animation.
     const renderSlot = (
         currentChar: string | null,
         previousChar: string | null,
@@ -464,9 +409,16 @@ function renderRankText(
         const slotHeight = fontSize * 1.1
         const sizingChar = currentChar ?? previousChar ?? "\u00A0"
 
+        // Build the animation frames for this slot. For unchanged digits this
+        // is a single frame — no actual movement. For changed digits, it's a
+        // multi-frame spinner.
         const rollFrames = buildDigitRoll(previousChar, currentChar, index, total, pushesUp)
         const changedStack = pushesUp ? rollFrames : [...rollFrames].reverse()
         const stack = changed ? changedStack : [currentChar ?? "\u00A0"]
+
+        // Compute starting and ending Y positions. The stack of frames is laid
+        // out vertically; we translate it upward (negative Y) to scroll
+        // through. pushesUp controls direction.
         const travelDistance = (changedStack.length - 1) * slotHeight
         const initialY = pushesUp ? 0 : -travelDistance
         const targetY = changed ? (pushesUp ? -travelDistance : 0) : 0
@@ -480,9 +432,12 @@ function renderRankText(
                     justifyItems: "stretch",
                     alignItems: "end",
                     height: slotHeight,
-                    overflow: "hidden",
+                    overflow: "hidden", // crop the off-screen stack frames
                 }}
             >
+                {/* Invisible sizer — reserves slot width based on the widest
+                    expected character. Without this, the slot would collapse
+                    around the currently-visible frame. */}
                 <span
                     style={{
                         gridArea: "1 / 1",
@@ -500,7 +455,7 @@ function renderRankText(
                     animate={{ y: targetY }}
                     transition={{
                         duration: shouldAnimateSlot ? durationSeconds : 0,
-                        ease: [0.2, 0.9, 0.2, 1],
+                        ease: [0.2, 0.9, 0.2, 1], // snappy with a soft tail
                         delay,
                     }}
                     style={{
@@ -542,10 +497,10 @@ function renderRankText(
                 ease: [0.22, 1, 0.36, 1],
             }}
             style={{
-                fontVariantNumeric: "tabular-nums",
+                fontVariantNumeric: "tabular-nums", // equal-width digits
                 fontFeatureSettings: '"tnum" 1, "lnum" 1',
                 whiteSpace: "nowrap",
-                transform: `skewX(-${textSlantDeg}deg)`,
+                transform: `skewX(-${textSlantDeg}deg)`, // italic slant on the digits themselves
                 transformOrigin: "center",
                 display: "inline-flex",
                 alignItems: "flex-end",
@@ -553,12 +508,7 @@ function renderRankText(
                 fontSize: numberFontSize,
             }}
         >
-            <span
-                style={{
-                    display: "inline-flex",
-                    alignItems: "flex-end",
-                }}
-            >
+            <span style={{ display: "inline-flex", alignItems: "flex-end" }}>
                 {currentMajorSlots.map((char, index) =>
                     renderSlot(
                         char,
@@ -569,6 +519,7 @@ function renderRankText(
                     )
                 )}
             </span>
+            {/* The thousands portion ("12,345" → ",345") at smaller size */}
             {minor ? (
                 <span
                     style={{
@@ -576,22 +527,17 @@ function renderRankText(
                         lineHeight: 0.92,
                         display: "inline-flex",
                         alignItems: "flex-end",
-                        transform: "translateY(-0.03em)",
+                        transform: "translateY(-0.03em)", // align baseline visually
                         marginLeft: "0.01em",
                     }}
                 >
-                    <span
-                        style={{
-                            display: "inline-flex",
-                            justifyContent: "center",
-                        }}
-                    >
-                        ,
-                    </span>
+                    <span style={{ display: "inline-flex", justifyContent: "center" }}>,</span>
                     {currentMinorSlots.map((char, index) =>
                         renderSlot(
                             char,
                             previousMinorSlots[index] ?? null,
+                            // Continue the slot index counter from the major
+                            // section so slotDelay sees one continuous wave.
                             maxMajorLength + index,
                             maxMajorLength + currentMinorSlots.length,
                             minorFontSize
@@ -602,6 +548,13 @@ function renderRankText(
         </motion.div>
     )
 }
+
+// ==================== COMPONENT ====================
+//
+// @framerSupportedLayoutWidth fixed
+// @framerSupportedLayoutHeight auto
+// @framerIntrinsicWidth 140
+// @framerIntrinsicHeight 50
 
 export default function CS2PremierRank(props: any) {
     const {
@@ -616,66 +569,72 @@ export default function CS2PremierRank(props: any) {
         numberFont,
     } = props
 
-    // 1. Subscribe to the live Premier rating feed.
-    const cs2 = usePremierRatingData()
-    const liveRating: number | null =
-        typeof cs2?.data?.premierRating === "number" ? cs2.data.premierRating : null
-    const localDebugOverride = useLocalDebugOverride()
+    // ---- 1. Resolve the rating value ----
+    // Source priority: live > canvas preview > waiting (null).
 
-    // 2. Decide what to display: live data > canvas preview > waiting.
+    const data = usePremierRatingData()
+    const liveRating: number | null =
+        typeof data?.premierRating === "number" ? data.premierRating : null
+
     const renderTarget = RenderTarget.current()
     const isCanvas =
         renderTarget === RenderTarget.canvas || renderTarget === RenderTarget.thumbnail
-    const baseRating: number | null =
+
+    const rating: number | null =
         usePreviewOnCanvas && isCanvas
             ? previewValue
             : liveRating !== null
                 ? liveRating
                 : null
-    const localBaseRef = React.useRef<number | null>(null)
-    React.useEffect(() => {
-        if (!localDebugOverride.active) {
-            localBaseRef.current = null
-            return
-        }
 
-        if (localBaseRef.current === null) {
-            localBaseRef.current = baseRating ?? 0
-        }
-    }, [baseRating, localDebugOverride.active])
+    // ---- 2. Format and run the change animation ----
 
-    const targetRating: number | null = localDebugOverride.active
-        ? Math.max(0, (localBaseRef.current ?? baseRating ?? 0) + localDebugOverride.delta)
-        : baseRating
-    // 3. Prepare the current display text and CS2-style change animation.
-    const displayText = targetRating !== null ? formatRating(targetRating) : fallbackText
-    const transitionCacheKey =
-        usePreviewOnCanvas && isCanvas ? "cs2-rank-preview-canvas" : "cs2-rank-live"
+    const displayText = rating !== null ? formatRating(rating) : fallbackText
+
     const transitionState = useRankChangeDisplay(
         displayText,
         animateNumber,
         animateDuration,
-        transitionCacheKey
+        Math.ceil(maxSlotDelay(displayText) * 1000)
     )
-    const currentTier = getTier(parseRatingNumber(transitionState.currentText) ?? targetRating ?? 0)
+
+    // ---- 3. Compute layout based on font size ----
+
+    // Use the displayed (possibly mid-roll) value to pick the tier so colors
+    // track the visible number, not the target. This means the gradient
+    // crossfade aligns with when the digits actually settle on the new tier.
+    const visibleTierText =
+        transitionState.animationActive && transitionState.previousText !== null
+            ? transitionState.previousText
+            : transitionState.currentText
+    const currentTier = getTier(parseRatingNumber(visibleTierText) ?? rating ?? 0)
+
     const fontStyle = numberFont ?? {}
     const numberFontSize =
         typeof fontStyle.fontSize === "number"
             ? fontStyle.fontSize
             : Number.parseFloat(String(fontStyle.fontSize ?? 28)) || 28
-    const stripeOpacities = [1, 0.82, 0.6]
+
+    const stripeOpacities = [1, 0.82, 0.6] // three stripes, decreasing prominence
     const dimensions = getBadgeDimensions(numberFontSize)
     const rollDurationSeconds = animateDuration / 1000
+
+    // Width of the left "stripe rail" — used to push the number container
+    // away from the stripes so digits don't overlap them.
     const stripeRailWidth =
         dimensions.leftRailPadding +
         stripeOpacities.length * dimensions.stripeWidth +
         Math.max(0, stripeOpacities.length - 1) * dimensions.stripeGap
+
     const tierTransition = {
         duration: rollDurationSeconds,
         ease: [0.22, 1, 0.36, 1] as [number, number, number, number],
     }
 
-    // 4. Trigger the sweep whenever the displayed rank actually changes.
+    // ---- 4. Trigger the sweep flash on rank change ----
+    // The flash is a separate div that re-mounts (via key change) to replay
+    // its CSS animation. We don't trigger on first paint or fallback states.
+
     const [flashKey, setFlashKey] = React.useState(0)
     const prevDisplayText = React.useRef<string | null>(null)
     React.useEffect(() => {
@@ -690,18 +649,15 @@ export default function CS2PremierRank(props: any) {
         prevDisplayText.current = displayText
     }, [displayText, fallbackText])
 
+    // ---- 5. Render ----
+
     return (
-        <div
-            style={{
-                width: dimensions.width,
-                height: dimensions.height,
-            }}
-        >
+        <div style={{ width: dimensions.width, height: dimensions.height }}>
             <style>{`
                 @keyframes cs2-flash { 0% { opacity: 0; } 14% { opacity: 1; } 100% { opacity: 0; } }
             `}</style>
 
-            {/* BADGE */}
+            {/* Outer wrapper — preserves layout dimensions */}
             <div
                 style={{
                     position: "relative",
@@ -709,6 +665,8 @@ export default function CS2PremierRank(props: any) {
                     height: dimensions.height,
                 }}
             >
+                {/* Skewed body — the parallelogram badge. Everything inside
+                    inherits the skew unless explicitly counter-skewed. */}
                 <div
                     style={{
                         position: "absolute",
@@ -718,6 +676,11 @@ export default function CS2PremierRank(props: any) {
                         overflow: "hidden",
                     }}
                 >
+                    {/* Animated background layer.
+                        framer-motion interpolates linear-gradient strings as
+                        long as the from/to gradients have matching structure
+                        (same stop count, same units). All seven tiers share
+                        the 3-stop 0%/52%/100% structure so this works. */}
                     <motion.div
                         initial={false}
                         animate={{
@@ -738,6 +701,7 @@ export default function CS2PremierRank(props: any) {
                             overflow: "hidden",
                         }}
                     >
+                        {/* Diagonal gloss highlight — purely cosmetic */}
                         <div
                             style={{
                                 position: "absolute",
@@ -748,6 +712,7 @@ export default function CS2PremierRank(props: any) {
                                 mixBlendMode: "screen",
                             }}
                         />
+                        {/* Bottom darkening — adds depth */}
                         <div
                             style={{
                                 position: "absolute",
@@ -757,6 +722,9 @@ export default function CS2PremierRank(props: any) {
                                     "linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0) 52%, rgba(0,0,0,0.22) 100%)",
                             }}
                         />
+                        {/* Three vertical stripes on the left edge — the
+                            tier signature in the in-game badge. Decreasing
+                            opacity creates the depth-stagger effect. */}
                         <div
                             style={{
                                 position: "absolute",
@@ -798,6 +766,10 @@ export default function CS2PremierRank(props: any) {
                         </div>
                     </motion.div>
 
+                    {/* Number container — counter-skews so digits read upright
+                        against the slanted badge. The stripeRailWidth spacer
+                        on the left reserves space the stripes occupy so the
+                        number stays centered in the remaining area. */}
                     <div
                         style={{
                             position: "absolute",
@@ -806,19 +778,14 @@ export default function CS2PremierRank(props: any) {
                             alignItems: "center",
                         }}
                     >
-                        <div
-                            style={{
-                                width: stripeRailWidth,
-                                flexShrink: 0,
-                            }}
-                        />
+                        <div style={{ width: stripeRailWidth, flexShrink: 0 }} />
                         <div
                             style={{
                                 flex: 1,
                                 display: "flex",
                                 alignItems: "center",
                                 justifyContent: "center",
-                                transform: `skewX(${slantDeg}deg)`,
+                                transform: `skewX(${slantDeg}deg)`, // counter-skew
                                 paddingRight: dimensions.rightPadding,
                                 paddingLeft: dimensions.innerLeftPadding,
                                 position: "relative",
@@ -840,6 +807,8 @@ export default function CS2PremierRank(props: any) {
                         </div>
                     </div>
 
+                    {/* Sweep flash — re-mounts via key change to replay the
+                        CSS keyframe each time the displayed value changes. */}
                     <div
                         key={flashKey}
                         style={{
@@ -857,6 +826,10 @@ export default function CS2PremierRank(props: any) {
         </div>
     )
 }
+
+// FIX: set displayName so Framer's Layers panel and dev tools label this
+// component cleanly instead of showing "Component" or the function name.
+CS2PremierRank.displayName = "CS2 Premier Rank"
 
 // ==================== DEFAULTS & PROPERTY CONTROLS ====================
 
@@ -897,7 +870,11 @@ addPropertyControls(CS2PremierRank, {
         enabledTitle: "On",
         disabledTitle: "Off",
     },
-    fallbackText: { type: ControlType.String, title: "Fallback", defaultValue: "—" },
+    fallbackText: {
+        type: ControlType.String,
+        title: "Fallback",
+        defaultValue: "—",
+    },
 
     animateNumber: {
         type: ControlType.Boolean,
