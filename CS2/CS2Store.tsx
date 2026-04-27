@@ -77,6 +77,30 @@ function formatNumber(value: number | null | undefined, digits = 0): string {
     return digits === 0 ? String(Math.round(value)) : value.toFixed(digits)
 }
 
+function formatInt(value: number | null | undefined): string {
+    if (value === null || value === undefined || Number.isNaN(value)) {
+        return FALLBACK_TEXT
+    }
+
+    return new Intl.NumberFormat("en-US").format(Math.round(value))
+}
+
+function formatPercent(value: number | null | undefined, digits = 1): string {
+    if (value === null || value === undefined || Number.isNaN(value)) {
+        return FALLBACK_TEXT
+    }
+
+    return `${value.toFixed(digits)}%`
+}
+
+function formatMs(value: number | null | undefined): string {
+    if (value === null || value === undefined || Number.isNaN(value)) {
+        return FALLBACK_TEXT
+    }
+
+    return `${Math.round(value)} ms`
+}
+
 async function fetchCS2Data(): Promise<void> {
     if (inFlightRequest) {
         return inFlightRequest
@@ -202,7 +226,25 @@ export function useCS2Data() {
 export const withPremierRating = (Component): ComponentType => {
     return forwardRef((props, ref) => {
         const { data } = useCS2Store()
-        const text = formatNumber(data?.premierRating ?? null)
+        const text = formatInt(data?.premierRating ?? null)
+
+        return <Component ref={ref} {...props} text={text} />
+    })
+}
+
+export const withWingmanRating = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const text = formatInt(data?.wingmanRating ?? null)
+
+        return <Component ref={ref} {...props} text={text} />
+    })
+}
+
+export const withFaceitElo = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const text = formatInt(data?.faceitElo ?? null)
 
         return <Component ref={ref} {...props} text={text} />
     })
@@ -283,10 +325,42 @@ export const withReactionTime = (Component): ComponentType => {
     })
 }
 
+export const withReactionTimeMs = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const text = formatMs(data?.stats.reactionTime ?? null)
+
+        return <Component ref={ref} {...props} text={text} />
+    })
+}
+
 export const withAccuracy = (Component): ComponentType => {
     return forwardRef((props, ref) => {
         const { data } = useCS2Store()
         const text = formatNumber(data?.stats.accuracy ?? null, 1)
+
+        return <Component ref={ref} {...props} text={text} />
+    })
+}
+
+export const withAccuracyPercent = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const text = formatPercent(data?.stats.accuracy ?? null, 1)
+
+        return <Component ref={ref} {...props} text={text} />
+    })
+}
+
+export const withOnlineStatusText = (Component): ComponentType => {
+    return forwardRef((props, ref) => {
+        const { data } = useCS2Store()
+        const text =
+            data?.online === true
+                ? "Online"
+                : data?.online === false
+                  ? "Offline"
+                  : FALLBACK_TEXT
 
         return <Component ref={ref} {...props} text={text} />
     })
