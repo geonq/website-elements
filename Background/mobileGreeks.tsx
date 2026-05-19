@@ -58,19 +58,22 @@ export default function MobileGreeks({
                 const hx = Math.random() * W
                 const hy = Math.random() * H
                 const amp = driftAmplitude * (0.4 + Math.random() * 0.8)
+                const a1 = Math.random() * Math.PI * 2
+                const a2 = Math.random() * Math.PI * 2
+                const ph1 = Math.random() * Math.PI * 2
+                const ph2 = Math.random() * Math.PI * 2
+                const amp1 = amp * 0.65
+                const amp2 = amp * 0.45
+                // start at the oscillator's current position so there's no initial spring tension
+                const x = hx + Math.cos(a1) * amp1 + Math.sin(a2 + ph2) * amp2
+                const y = hy + Math.sin(a1 + ph1) * amp1 + Math.cos(a2) * amp2
                 return {
-                    hx, hy, x: hx, y: hy, vx: 0, vy: 0,
+                    hx, hy, x, y, vx: 0, vy: 0,
                     symbol: SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)],
                     size: minSize + Math.random() * (maxSize - minSize),
                     alpha: baseOpacity * (0.6 + Math.random() * 0.8),
-                    a1: Math.random() * Math.PI * 2,
-                    r1: driftSpeed * (0.6 + Math.random() * 0.8),
-                    amp1: amp * 0.65,
-                    ph1: Math.random() * Math.PI * 2,
-                    a2: Math.random() * Math.PI * 2,
-                    r2: driftSpeed * (0.3 + Math.random() * 0.5),  // slower second wave
-                    amp2: amp * 0.45,
-                    ph2: Math.random() * Math.PI * 2,
+                    a1, r1: driftSpeed * (0.6 + Math.random() * 0.8), amp1, ph1,
+                    a2, r2: driftSpeed * (0.3 + Math.random() * 0.5), amp2, ph2,
                 }
             })
         }
