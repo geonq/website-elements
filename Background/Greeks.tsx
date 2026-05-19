@@ -70,7 +70,7 @@ export default function ParticleSymbols({
                     vy: 0,
                     symbol: SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)],
                     size: minSize + Math.random() * (maxSize - minSize),
-                    base: 0.2 + Math.random() * 0.5,
+                    base: 0.1 + Math.random() * 0.35,
                 }
             })
         }
@@ -80,17 +80,20 @@ export default function ParticleSymbols({
             const { x: mx, y: my } = mouseRef.current
 
             for (const p of particles) {
+                // Direction: current position → mouse
                 const dx = mx - p.x
                 const dy = my - p.y
-                const dist = Math.sqrt(dx * dx + dy * dy)
+                const curDist = Math.sqrt(dx * dx + dy * dy)
 
-                const deadZone = 12
-                if (dist < attractRadius && dist > deadZone) {
-                    // bell-curve falloff: zero at edge, peaks mid-range, zero near cursor
-                    const t = (dist - deadZone) / (attractRadius - deadZone)
-                    const force = t * (1 - t) * 4 * attractStrength
-                    p.vx += (dx / dist) * force
-                    p.vy += (dy / dist) * force
+                // Magnitude: home → mouse (stable, no feedback loop as particle moves)
+                const hdx = mx - p.hx
+                const hdy = my - p.hy
+                const homeDist = Math.sqrt(hdx * hdx + hdy * hdy)
+
+                if (homeDist < attractRadius && homeDist > 0 && curDist > 0.1) {
+                    const force = (attractRadius - homeDist) / attractRadius
+                    p.vx += (dx / curDist) * force * force * attractStrength
+                    p.vy += (dy / curDist) * force * force * attractStrength
                 }
 
                 p.vx += (p.hx - p.x) * returnSpeed
@@ -100,8 +103,9 @@ export default function ParticleSymbols({
                 p.x += p.vx
                 p.y += p.vy
 
-                const pull = dist < attractRadius ? 1 - dist / attractRadius : 0
-                const alpha = p.base + pull * 0.6
+                // Opacity also from home→mouse so it doesn't flicker as particle moves
+                const pull = homeDist < attractRadius ? 1 - homeDist / attractRadius : 0
+                const alpha = Math.min(1, p.base + pull * (1 - p.base))
 
                 ctx.font = `${p.size}px monospace`
                 ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`
