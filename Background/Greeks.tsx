@@ -40,7 +40,7 @@ export default function ParticleSymbols({
     maxSize = 22,
 }) {
     const canvasRef = useRef(null)
-    const mouseRef = useRef({ x: -9999, y: -9999 })
+    const rawMouseRef = useRef({ x: -9999, y: -9999 })
 
     useEffect(() => {
         const canvas = canvasRef.current
@@ -48,7 +48,7 @@ export default function ParticleSymbols({
         const { r, g, b } = parseColor(symbolColor)
         let animId
         let W, H, dpr
-        let particles = []
+        let particles: { x: number; y: number; hx: number; hy: number; vx: number; vy: number; symbol: string; size: number; base: number }[] = []
 
         function init() {
             dpr = window.devicePixelRatio || 1
@@ -77,33 +77,37 @@ export default function ParticleSymbols({
 
         function draw() {
             ctx.clearRect(0, 0, W, H)
-            const { x: mx, y: my } = mouseRef.current
+
+            // Recompute canvas-relative position every frame so scroll is accounted for
+            const rect = canvas.getBoundingClientRect()
+            const raw = rawMouseRef.current
+            const mx = raw.x < -999 ? -9999 : raw.x - rect.left
+            const my = raw.y < -999 ? -9999 : raw.y - rect.top
 
             for (const p of particles) {
-                // Direction: current position → mouse
-                const dx = mx - p.x
-                const dy = my - p.y
-                const curDist = Math.sqrt(dx * dx + dy * dy)
-
-                // Magnitude: home → mouse (stable, no feedback loop as particle moves)
+                // home → mouse: determines if this particle is in range
                 const hdx = mx - p.hx
                 const hdy = my - p.hy
                 const homeDist = Math.sqrt(hdx * hdx + hdy * hdy)
 
-                if (homeDist < attractRadius && homeDist > 0 && curDist > 0.1) {
-                    const force = (attractRadius - homeDist) / attractRadius
-                    p.vx += (dx / curDist) * force * force * attractStrength
-                    p.vy += (dy / curDist) * force * force * attractStrength
+                // Spring target: home nudged toward mouse, capped so it never reaches cursor
+                let tx = p.hx
+                let ty = p.hy
+                if (homeDist > 1 && homeDist < attractRadius) {
+                    const pull = (attractRadius - homeDist) / attractRadius
+                    const maxPull = attractRadius * 0.35 * attractStrength * 0.08
+                    const offset = maxPull * pull * pull
+                    tx = p.hx + (hdx / homeDist) * offset
+                    ty = p.hy + (hdy / homeDist) * offset
                 }
 
-                p.vx += (p.hx - p.x) * returnSpeed
-                p.vy += (p.hy - p.y) * returnSpeed
+                p.vx += (tx - p.x) * returnSpeed
+                p.vy += (ty - p.y) * returnSpeed
                 p.vx *= damping
                 p.vy *= damping
                 p.x += p.vx
                 p.y += p.vy
 
-                // Opacity also from home→mouse so it doesn't flicker as particle moves
                 const pull = homeDist < attractRadius ? 1 - homeDist / attractRadius : 0
                 const alpha = Math.min(1, p.base + pull * (1 - p.base))
 
@@ -115,15 +119,11 @@ export default function ParticleSymbols({
             animId = requestAnimationFrame(draw)
         }
 
-        function onMove(e) {
-            const rect = canvas.getBoundingClientRect()
-            mouseRef.current = {
-                x: e.clientX - rect.left,
-                y: e.clientY - rect.top,
-            }
+        function onMove(e: MouseEvent) {
+            rawMouseRef.current = { x: e.clientX, y: e.clientY }
         }
         function onLeave() {
-            mouseRef.current = { x: -9999, y: -9999 }
+            rawMouseRef.current = { x: -9999, y: -9999 }
         }
 
         init()
