@@ -1,0 +1,176 @@
+import { useEffect, useRef } from "react"
+import { addPropertyControls, ControlType } from "framer"
+
+const SYMBOLS = [
+    "∑", "Δ", "σ", "π", "μ", "λ", "∞", "∂", "α", "β", "ρ", "θ", "φ", "ε", "η",
+]
+
+function parseColor(color: string) {
+    const tmp = document.createElement("canvas")
+    tmp.width = tmp.height = 1
+    const c = tmp.getContext("2d")!
+    c.fillStyle = color
+    c.fillRect(0, 0, 1, 1)
+    const [r, g, b] = c.getImageData(0, 0, 1, 1).data
+    return { r, g, b }
+}
+
+export default function MobileGreeks({
+    count = 60,
+    symbolColor = "#ffffff",
+    minSize = 8,
+    maxSize = 18,
+    driftAmplitude = 14,
+    driftSpeed = 0.003,
+    baseOpacity = 0.22,
+}) {
+    const canvasRef = useRef(null)
+
+    useEffect(() => {
+        const canvas = canvasRef.current
+        const ctx = canvas.getContext("2d")
+        const { r, g, b } = parseColor(symbolColor)
+        let animId: number
+        let W: number, H: number, dpr: number
+
+        type Particle = {
+            hx: number; hy: number
+            x: number; y: number
+            vx: number; vy: number
+            symbol: string; size: number; alpha: number
+            // two independent oscillators per particle for non-repetitive paths
+            a1: number; r1: number; amp1: number; ph1: number
+            a2: number; r2: number; amp2: number; ph2: number
+        }
+        let particles: Particle[] = []
+
+        function resizeCanvas() {
+            dpr = window.devicePixelRatio || 1
+            W = canvas.offsetWidth
+            H = canvas.offsetHeight
+            canvas.width = W * dpr
+            canvas.height = H * dpr
+            ctx.scale(dpr, dpr)
+        }
+
+        function initParticles() {
+            particles = Array.from({ length: count }, () => {
+                const hx = Math.random() * W
+                const hy = Math.random() * H
+                const amp = driftAmplitude * (0.4 + Math.random() * 0.8)
+                return {
+                    hx, hy, x: hx, y: hy, vx: 0, vy: 0,
+                    symbol: SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)],
+                    size: minSize + Math.random() * (maxSize - minSize),
+                    alpha: baseOpacity * (0.6 + Math.random() * 0.8),
+                    a1: Math.random() * Math.PI * 2,
+                    r1: driftSpeed * (0.6 + Math.random() * 0.8),
+                    amp1: amp * 0.65,
+                    ph1: Math.random() * Math.PI * 2,
+                    a2: Math.random() * Math.PI * 2,
+                    r2: driftSpeed * (0.3 + Math.random() * 0.5),  // slower second wave
+                    amp2: amp * 0.45,
+                    ph2: Math.random() * Math.PI * 2,
+                }
+            })
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, W, H)
+
+            for (const p of particles) {
+                p.a1 += p.r1
+                p.a2 += p.r2
+
+                const tx = p.hx + Math.cos(p.a1) * p.amp1 + Math.sin(p.a2 + p.ph2) * p.amp2
+                const ty = p.hy + Math.sin(p.a1 + p.ph1) * p.amp1 + Math.cos(p.a2) * p.amp2
+
+                p.vx += (tx - p.x) * 0.025
+                p.vy += (ty - p.y) * 0.025
+                p.vx *= 0.92
+                p.vy *= 0.92
+                p.x += p.vx
+                p.y += p.vy
+
+                ctx.font = `${p.size}px monospace`
+                ctx.fillStyle = `rgba(${r},${g},${b},${p.alpha})`
+                ctx.fillText(p.symbol, p.x, p.y)
+            }
+
+            animId = requestAnimationFrame(draw)
+        }
+
+        resizeCanvas()
+        initParticles()
+        draw()
+
+        // only resize canvas geometry on orientation change, never reinit particles
+        const onResize = () => resizeCanvas()
+        window.addEventListener("orientationchange", onResize)
+
+        return () => {
+            cancelAnimationFrame(animId)
+            window.removeEventListener("orientationchange", onResize)
+        }
+    }, [count, symbolColor, minSize, maxSize, driftAmplitude, driftSpeed, baseOpacity])
+
+    return (
+        <canvas
+            ref={canvasRef}
+            style={{ width: "100%", height: "100%", display: "block", pointerEvents: "none" }}
+        />
+    )
+}
+
+addPropertyControls(MobileGreeks, {
+    count: {
+        type: ControlType.Number,
+        defaultValue: 60,
+        min: 10,
+        max: 200,
+        title: "Count",
+    },
+    symbolColor: {
+        type: ControlType.Color,
+        defaultValue: "#ffffff",
+        title: "Color",
+    },
+    minSize: {
+        type: ControlType.Number,
+        defaultValue: 8,
+        min: 4,
+        max: 40,
+        title: "Min size",
+    },
+    maxSize: {
+        type: ControlType.Number,
+        defaultValue: 18,
+        min: 8,
+        max: 60,
+        title: "Max size",
+    },
+    driftAmplitude: {
+        type: ControlType.Number,
+        defaultValue: 14,
+        min: 2,
+        max: 60,
+        step: 1,
+        title: "Drift range (px)",
+    },
+    driftSpeed: {
+        type: ControlType.Number,
+        defaultValue: 0.003,
+        min: 0.0005,
+        max: 0.015,
+        step: 0.0005,
+        title: "Drift speed",
+    },
+    baseOpacity: {
+        type: ControlType.Number,
+        defaultValue: 0.22,
+        min: 0.05,
+        max: 1,
+        step: 0.01,
+        title: "Opacity",
+    },
+})
