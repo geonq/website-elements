@@ -5,14 +5,16 @@ const SYMBOLS = [
     "∑", "Δ", "σ", "π", "μ", "λ", "∞", "∂", "α", "β", "ρ", "θ", "φ", "ε", "η",
 ]
 
-function parseColor(color: string) {
-    const tmp = document.createElement("canvas")
-    tmp.width = tmp.height = 1
-    const c = tmp.getContext("2d")!
-    c.fillStyle = color
-    c.fillRect(0, 0, 1, 1)
-    const [r, g, b] = c.getImageData(0, 0, 1, 1).data
-    return { r, g, b }
+function resolveColor(color: string) {
+    const div = document.createElement("div")
+    div.style.color = color
+    div.style.position = "absolute"
+    div.style.visibility = "hidden"
+    document.body.appendChild(div)
+    const computed = getComputedStyle(div).color
+    document.body.removeChild(div)
+    const m = computed.match(/[\d.]+/g) ?? ["255", "255", "255"]
+    return { r: +m[0], g: +m[1], b: +m[2] }
 }
 
 export default function MobileGreeks({
@@ -25,11 +27,20 @@ export default function MobileGreeks({
     baseOpacity = 0.22,
 }) {
     const canvasRef = useRef(null)
+    const colorRef = useRef({ r: 255, g: 255, b: 255 })
 
     useEffect(() => {
         const canvas = canvasRef.current
         const ctx = canvas.getContext("2d")
-        const { r, g, b } = parseColor(symbolColor)
+
+        function refreshColor() {
+            colorRef.current = resolveColor(symbolColor)
+        }
+        refreshColor()
+
+        const observer = new MutationObserver(refreshColor)
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-framer-theme"] })
+
         let animId: number
         let W: number, H: number, dpr: number
 
@@ -96,6 +107,7 @@ export default function MobileGreeks({
                 p.y += p.vy
 
                 ctx.font = `${p.size}px monospace`
+                const { r, g, b } = colorRef.current
                 ctx.fillStyle = `rgba(${r},${g},${b},${p.alpha})`
                 ctx.fillText(p.symbol, p.x, p.y)
             }
@@ -114,6 +126,7 @@ export default function MobileGreeks({
         return () => {
             cancelAnimationFrame(animId)
             window.removeEventListener("orientationchange", onResize)
+            observer.disconnect()
         }
     }, [count, symbolColor, minSize, maxSize, driftAmplitude, driftSpeed, baseOpacity])
 
