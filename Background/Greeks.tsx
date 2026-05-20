@@ -164,11 +164,15 @@ export default function ParticleSymbols({
         canvas.addEventListener("mouseleave", onLeave)
         draw()
 
+        const resizeObserver = new ResizeObserver(() => init())
+        resizeObserver.observe(canvas)
+
         return () => {
             cancelAnimationFrame(animId)
             window.removeEventListener("mousemove", onMove)
             canvas.removeEventListener("mouseleave", onLeave)
             observer.disconnect()
+            resizeObserver.disconnect()
         }
     }, [
         count,

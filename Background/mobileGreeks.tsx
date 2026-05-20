@@ -1,3 +1,6 @@
+// this component has been discontinues for redundancy reasons
+
+
 import { useEffect, useRef } from "react"
 import { addPropertyControls, ControlType } from "framer"
 
@@ -119,13 +122,13 @@ export default function MobileGreeks({
         initParticles()
         draw()
 
-        // only resize canvas geometry on orientation change, never reinit particles
-        const onResize = () => resizeCanvas()
-        window.addEventListener("orientationchange", onResize)
+        // reinit canvas geometry on resize; particles stay (no position jump)
+        const resizeObserver = new ResizeObserver(() => resizeCanvas())
+        resizeObserver.observe(canvas)
 
         return () => {
             cancelAnimationFrame(animId)
-            window.removeEventListener("orientationchange", onResize)
+            resizeObserver.disconnect()
             observer.disconnect()
         }
     }, [count, symbolColor, minSize, maxSize, driftAmplitude, driftSpeed, baseOpacity])
