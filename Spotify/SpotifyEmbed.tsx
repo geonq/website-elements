@@ -374,7 +374,9 @@ export default function SpotifyNowPlaying(props) {
         progressBottomPadding
 
     const chromeWidth = outerPaddingX * 2 + albumSize + albumTextGap + innerPadding
-    const collapsedWidth = isPlaying ? collapsedPlayingWidth : collapsedIdleWidth
+    const idleTextWidth = 5 + 6 + measureTextWidth("Not Listening", 10, 400, 1.3) + innerPadding + 4
+    const minIdleWidth = outerPaddingX + albumSize + albumTextGap + idleTextWidth + outerPaddingX
+    const collapsedWidth = isPlaying ? collapsedPlayingWidth : Math.max(collapsedIdleWidth, minIdleWidth)
     const minimumExpandedWidth = collapsedPlayingWidth + Math.max(48, albumSize * 2)
     const measuredContentWidth = Math.max(
         168,
@@ -947,6 +949,7 @@ export default function SpotifyNowPlaying(props) {
                                 height: albumSize,
                                 paddingRight: innerPadding,
                                 minWidth: 0,
+                                whiteSpace: "nowrap",
                             }}
                         >
                             <span
