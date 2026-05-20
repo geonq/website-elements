@@ -1,6 +1,90 @@
 import { useEffect, useRef, useState } from "react"
 import { addPropertyControls, ControlType } from "framer"
 
+const FONT_FAMILY = "-apple-system, BlinkMacSystemFont, 'Inter', sans-serif"
+
+const fmt = (ms: number) => {
+    const s = Math.floor(ms / 1000)
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
+}
+
+const hash = (str: string) => {
+    let h = 0
+    for (let i = 0; i < (str?.length ?? 0); i++) {
+        h = (h * 31 + str.charCodeAt(i)) >>> 0
+    }
+    return h
+}
+
+const withAlpha = (color: string | undefined, alpha: number): string => {
+    if (!color) return `rgba(255,255,255,${alpha})`
+    if (color.startsWith("#")) {
+        let hex = color.slice(1)
+        if (hex.length === 3) hex = hex.split("").map((c) => c + c).join("")
+        if (hex.length === 8) hex = hex.slice(0, 6)
+        if (hex.length === 6) {
+            const r = parseInt(hex.slice(0, 2), 16)
+            const g = parseInt(hex.slice(2, 4), 16)
+            const b = parseInt(hex.slice(4, 6), 16)
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`
+        }
+    }
+    const m = color.match(/rgba?\(([^)]+)\)/i)
+    if (m) {
+        const parts = m[1].split(",").map((p) => p.trim())
+        if (parts.length >= 3) return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})`
+    }
+    return color
+}
+
+const parseShadowRGBA = (color: string | undefined) => {
+    if (!color) return null
+    if (color.startsWith("#")) {
+        let hex = color.slice(1)
+        if (hex.length === 3) hex = hex.split("").map((c) => c + c).join("")
+        if (hex.length === 8) return {
+            r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16),
+            b: parseInt(hex.slice(4, 6), 16), a: parseInt(hex.slice(6, 8), 16) / 255,
+        }
+        if (hex.length === 6) return {
+            r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16),
+            b: parseInt(hex.slice(4, 6), 16), a: 1,
+        }
+    }
+    const m = color.match(/rgba?\(([^)]+)\)/i)
+    if (m) {
+        const p = m[1].split(",")
+        return { r: +p[0], g: +p[1], b: +p[2], a: p.length >= 4 ? +p[3] : 1 }
+    }
+    return null
+}
+
+const resolveColorToCss = (color: string): string => {
+    if (!color || typeof document === "undefined") return color
+    if (!color.trim().startsWith("var(")) return color
+    const div = document.createElement("div")
+    div.style.color = color
+    div.style.position = "absolute"
+    div.style.visibility = "hidden"
+    document.body.appendChild(div)
+    const computed = getComputedStyle(div).color
+    document.body.removeChild(div)
+    return computed || color
+}
+
+let _measureCanvas: HTMLCanvasElement | null = null
+const measureTextWidth = (text: string, fontSize: number, fontWeight = 400, letterSpacing = 0): number => {
+    const content = text?.trim?.() ?? ""
+    if (!content) return 0
+    const fallbackWidth = content.length * fontSize * 0.58 + Math.max(0, content.length - 1) * letterSpacing
+    if (typeof document === "undefined") return fallbackWidth
+    if (!_measureCanvas) _measureCanvas = document.createElement("canvas")
+    const ctx = _measureCanvas.getContext("2d")
+    if (!ctx) return fallbackWidth
+    ctx.font = `${fontWeight} ${fontSize}px ${FONT_FAMILY}`
+    return ctx.measureText(content).width + Math.max(0, content.length - 1) * letterSpacing
+}
+
 /**
  * SpotifyNowPlaying — Dynamic Island w/ collapsing waveform
  *
@@ -58,7 +142,6 @@ export default function SpotifyNowPlaying(props) {
     const barRefs = useRef([])
     const rafRef = useRef(null)
     const hoverTimerRef = useRef(null)
-    const measureCanvasRef = useRef(null)
 
     // ---- Poll the Worker ----
     useEffect(() => {
@@ -221,11 +304,6 @@ export default function SpotifyNowPlaying(props) {
         }
     }, [])
 
-    const fmt = (ms) => {
-        const s = Math.floor(ms / 1000)
-        return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
-    }
-
     const elapsedMs = isPlaying
         ? progressBaseRef.current.serverProgress +
           (Date.now() - progressBaseRef.current.fetchedAt)
@@ -234,44 +312,7 @@ export default function SpotifyNowPlaying(props) {
     const accent =
         useAlbumColor && extractedColor ? extractedColor : accentColorProp
 
-    const withAlpha = (color, alpha) => {
-        if (!color) return `rgba(255,255,255,${alpha})`
-
-        if (color.startsWith("#")) {
-            let hex = color.slice(1)
-            if (hex.length === 3) {
-                hex = hex.split("").map((c: string) => c + c).join("")
-            }
-            // 8-char hex (#RRGGBBAA) — Framer uses this when opacity is set in the picker
-            if (hex.length === 8) {
-                hex = hex.slice(0, 6)
-            }
-            if (hex.length === 6) {
-                const r = parseInt(hex.slice(0, 2), 16)
-                const g = parseInt(hex.slice(2, 4), 16)
-                const b = parseInt(hex.slice(4, 6), 16)
-                return `rgba(${r}, ${g}, ${b}, ${alpha})`
-            }
-        }
-
-        const rgbMatch = color.match(/rgba?\(([^)]+)\)/i)
-        if (rgbMatch) {
-            const parts = rgbMatch[1].split(",").map((p: string) => p.trim())
-            if (parts.length >= 3) {
-                return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})`
-            }
-        }
-
-        return color
-    }
-
-    const hash = (str) => {
-        let h = 0
-        for (let i = 0; i < (str?.length ?? 0); i++) {
-            h = (h * 31 + str.charCodeAt(i)) >>> 0
-        }
-        return h
-    }
+    const accentResolved = resolveColorToCss(accent)
 
     const trackHash = hash(data?.track_id ?? "")
     const pseudoBpm = 85 + (trackHash % 70)
@@ -309,8 +350,6 @@ export default function SpotifyNowPlaying(props) {
     const swingAmount = 1.0
 
     const easing = "cubic-bezier(0.32, 0.72, 0, 1)"
-    const fontFamily =
-        "-apple-system, BlinkMacSystemFont, 'Inter', sans-serif"
     // -------------------------------------
 
     const clearHoverTimer = () => {
@@ -341,32 +380,6 @@ export default function SpotifyNowPlaying(props) {
             setHoverPhase("collapsed")
             hoverTimerRef.current = null
         }, Math.round((shellCollapseDelay + shellCollapseDuration) * 1000))
-    }
-
-    const measureTextWidth = (text, fontSize, fontWeight = 400, letterSpacing = 0) => {
-        const content = text?.trim?.() ?? ""
-        if (!content) return 0
-
-        const fallbackWidth =
-            content.length * fontSize * 0.58 +
-            Math.max(0, content.length - 1) * letterSpacing
-
-        if (typeof document === "undefined") return fallbackWidth
-
-        let canvas = measureCanvasRef.current
-        if (!canvas) {
-            canvas = document.createElement("canvas")
-            measureCanvasRef.current = canvas
-        }
-
-        const ctx = canvas.getContext("2d")
-        if (!ctx) return fallbackWidth
-
-        ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`
-        return (
-            ctx.measureText(content).width +
-            Math.max(0, content.length - 1) * letterSpacing
-        )
     }
 
     const albumSize = collapsedHeight - innerPadding * 2
@@ -416,49 +429,25 @@ export default function SpotifyNowPlaying(props) {
         hoverPhase === "expanding" || hoverPhase === "expanded"
     const shellCollapsing = hoverPhase === "collapsing"
     const shellElevated = hoverPhase !== "collapsed"
-    const progressHead = Math.max(0, Math.min(100, progress))
-    const ambientAccentStrong = withAlpha(accent, 0.12)
-    const ambientAccentSoft = withAlpha(accent, 0.05)
-    const ambientAccentFaint = withAlpha(accent, 0.018)
+    const ambientAccentStrong = withAlpha(accentResolved, 0.12)
+    const ambientAccentSoft = withAlpha(accentResolved, 0.05)
+    const ambientAccentFaint = withAlpha(accentResolved, 0.018)
     const trackBackground = withAlpha(mutedColor, 0.42)
-    const progressFillGlow = withAlpha(accent, 0.1)
+    const progressFillGlow = withAlpha(accentResolved, 0.1)
 
     const resolvedShadowBlur = typeof shadowBlur === "number" ? shadowBlur : 20
 
-    const parseShadowRGBA = (color: string | undefined) => {
-        if (!color) return null
-        if (color.startsWith("#")) {
-            let hex = color.slice(1)
-            if (hex.length === 3) hex = hex.split("").map((c: string) => c + c).join("")
-            if (hex.length === 8) return {
-                r: parseInt(hex.slice(0, 2), 16),
-                g: parseInt(hex.slice(2, 4), 16),
-                b: parseInt(hex.slice(4, 6), 16),
-                a: parseInt(hex.slice(6, 8), 16) / 255,
-            }
-            if (hex.length === 6) return {
-                r: parseInt(hex.slice(0, 2), 16),
-                g: parseInt(hex.slice(2, 4), 16),
-                b: parseInt(hex.slice(4, 6), 16),
-                a: 1,
-            }
-        }
-        const m = color.match(/rgba?\(([^)]+)\)/i)
-        if (m) {
-            const p = m[1].split(",")
-            return { r: +p[0], g: +p[1], b: +p[2], a: p.length >= 4 ? +p[3] : 1 }
-        }
-        return null
-    }
-
     const activeShadowColor = themeMode === "dark" ? shadowColorDark : shadowColorLight
     const sp = parseShadowRGBA(activeShadowColor)
+    const outerRing = themeMode === "light"
+        ? "0 0 0 1px rgba(0,0,0,0.07), "
+        : "0 0 0 0.5px rgba(255,255,255,0.07), "
     const shadowResting = sp
-        ? `0 8px ${resolvedShadowBlur}px rgba(${sp.r},${sp.g},${sp.b},${sp.a})`
-        : `0 8px ${resolvedShadowBlur}px ${activeShadowColor || "rgba(0,0,0,0.24)"}`
+        ? `${outerRing}0 8px ${resolvedShadowBlur}px rgba(${sp.r},${sp.g},${sp.b},${sp.a})`
+        : `${outerRing}0 8px ${resolvedShadowBlur}px ${activeShadowColor || "rgba(0,0,0,0.24)"}`
     const shadowElevated = sp
-        ? `0 18px ${Math.round(resolvedShadowBlur * 2.4)}px rgba(${sp.r},${sp.g},${sp.b},${Math.min(1, sp.a * 1.75)})`
-        : `0 18px ${Math.round(resolvedShadowBlur * 2.4)}px ${activeShadowColor || "rgba(0,0,0,0.42)"}`
+        ? `${outerRing}0 8px ${resolvedShadowBlur}px rgba(${sp.r},${sp.g},${sp.b},${Math.min(1, sp.a * 1.5)})`
+        : `${outerRing}0 8px ${resolvedShadowBlur}px ${activeShadowColor || "rgba(0,0,0,0.36)"}`
 
     const resolvedNotListeningColor = notListeningColor || mutedColor
     const resolvedAlbumPlaceholderColor = albumPlaceholderColor || mutedColor
@@ -759,7 +748,7 @@ export default function SpotifyNowPlaying(props) {
                     position: "relative",
                     overflow: "hidden",
                     transition: shellTransition,
-                    fontFamily,
+                    fontFamily: FONT_FAMILY,
                     boxShadow: shellExpanded ? shadowElevated : shadowResting,
                     display: "flex",
                     flexDirection: "column",
@@ -802,8 +791,9 @@ export default function SpotifyNowPlaying(props) {
                         style={{
                             position: "absolute",
                             inset: 0,
-                            background:
-                                "linear-gradient(180deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.025) 22%, rgba(255,255,255,0.01) 48%, rgba(255,255,255,0) 100%)",
+                            background: themeMode === "light"
+                                ? "linear-gradient(180deg, rgba(0,0,0,0.03) 0%, rgba(0,0,0,0.01) 22%, rgba(0,0,0,0) 48%, rgba(0,0,0,0) 100%)"
+                                : "linear-gradient(180deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.025) 22%, rgba(255,255,255,0.01) 48%, rgba(255,255,255,0) 100%)",
                             animation:
                                 "spotifyGlassBreathe 9s ease-in-out infinite",
                             opacity: 0.52,
@@ -814,8 +804,9 @@ export default function SpotifyNowPlaying(props) {
                             position: "absolute",
                             inset: 0,
                             borderRadius: "inherit",
-                            boxShadow:
-                                "inset 0 1px 0 rgba(255,255,255,0.075), inset 0 0 0 1px rgba(255,255,255,0.035)",
+                            boxShadow: themeMode === "light"
+                                ? "inset 0 1px 0 rgba(0,0,0,0.07), inset 0 2px 6px rgba(0,0,0,0.04)"
+                                : "inset 0 1px 0 rgba(255,255,255,0.14), inset 0 2px 8px rgba(0,0,0,0.18)",
                         }}
                     />
                 </div>
@@ -830,7 +821,6 @@ export default function SpotifyNowPlaying(props) {
                         alignItems: "flex-start",
                         gap: albumTextGap,
                         flexShrink: 0,
-                        position: "relative",
                         transition: topStripTransition,
                     }}
                 >
@@ -849,7 +839,9 @@ export default function SpotifyNowPlaying(props) {
                             backgroundPosition: "center",
                             position: "relative",
                             boxShadow: shellElevated
-                                ? "0 10px 22px rgba(0,0,0,0.18)"
+                                ? themeMode === "light"
+                                    ? "0 10px 22px rgba(0,0,0,0.28)"
+                                    : "0 10px 22px rgba(0,0,0,0.18)"
                                 : "none",
                             transition: "box-shadow 0.3s ease",
                         }}
@@ -1071,7 +1063,7 @@ export default function SpotifyNowPlaying(props) {
                                         height: "100%",
                                         width: `${progress}%`,
                                         minWidth:
-                                            progressHead > 0
+                                            progress > 0
                                                 ? progressBarHeight
                                                 : 0,
                                         background: accent,
