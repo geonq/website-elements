@@ -29,6 +29,11 @@ export default function SpotifyNowPlaying(props) {
         collapsedIdleWidth,
         collapsedHeight,
         maxExpandedWidth,
+        shadowColor,
+        shadowBlur,
+        shadowOpacity,
+        notListeningColor,
+        albumPlaceholderColor,
     } = props
 
     const [data, setData] = useState(null)
@@ -405,6 +410,15 @@ export default function SpotifyNowPlaying(props) {
     const trackBackground = withAlpha(mutedColor, 0.42)
     const progressFillGlow = withAlpha(accent, 0.1)
 
+    const resolvedShadowColor = shadowColor || "#000000"
+    const resolvedShadowBlur = typeof shadowBlur === "number" ? shadowBlur : 20
+    const resolvedShadowOpacity = typeof shadowOpacity === "number" ? shadowOpacity : 0.24
+    const shadowResting = `0 8px ${resolvedShadowBlur}px ${withAlpha(resolvedShadowColor, resolvedShadowOpacity)}`
+    const shadowElevated = `0 18px ${Math.round(resolvedShadowBlur * 2.4)}px ${withAlpha(resolvedShadowColor, Math.min(1, resolvedShadowOpacity * 1.75))}`
+
+    const resolvedNotListeningColor = notListeningColor || mutedColor
+    const resolvedAlbumPlaceholderColor = albumPlaceholderColor || mutedColor
+
     const topPaddingTop = shellExpanded ? outerPaddingY : innerPadding
     const topPaddingBottom = shellExpanded ? expandedTopBottomPadding : innerPadding
     const rightPanelHeight = shellExpanded
@@ -701,9 +715,7 @@ export default function SpotifyNowPlaying(props) {
                     overflow: "hidden",
                     transition: shellTransition,
                     fontFamily,
-                    boxShadow: shellElevated
-                        ? "0 18px 48px rgba(0,0,0,0.42)"
-                        : "0 8px 20px rgba(0,0,0,0.24)",
+                    boxShadow: shellElevated ? shadowElevated : shadowResting,
                     display: "flex",
                     flexDirection: "column",
                     color: textColor,
@@ -783,7 +795,7 @@ export default function SpotifyNowPlaying(props) {
                             height: albumSize,
                             flexShrink: 0,
                             borderRadius: albumBorderRadius,
-                            background: mutedColor,
+                            background: resolvedAlbumPlaceholderColor,
                             backgroundImage:
                                 isPlaying && data?.album_art_url
                                     ? `url(${data.album_art_url})`
@@ -945,7 +957,7 @@ export default function SpotifyNowPlaying(props) {
                                 fontSize: 10,
                                 textTransform: "uppercase",
                                 letterSpacing: 1.3,
-                                color: mutedColor,
+                                color: resolvedNotListeningColor,
                                 height: albumSize,
                                 paddingRight: innerPadding,
                                 minWidth: 0,
@@ -957,7 +969,7 @@ export default function SpotifyNowPlaying(props) {
                                     width: 5,
                                     height: 5,
                                     borderRadius: "50%",
-                                    background: mutedColor,
+                                    background: resolvedNotListeningColor,
                                     flexShrink: 0,
                                 }}
                             />
@@ -1120,6 +1132,37 @@ addPropertyControls(SpotifyNowPlaying, {
         type: ControlType.Color,
         title: "Muted",
         defaultValue: "#52525B",
+    },
+    notListeningColor: {
+        type: ControlType.Color,
+        title: "Not Listening",
+        defaultValue: "#52525B",
+    },
+    albumPlaceholderColor: {
+        type: ControlType.Color,
+        title: "Album Placeholder",
+        defaultValue: "#52525B",
+    },
+    shadowColor: {
+        type: ControlType.Color,
+        title: "Shadow Color",
+        defaultValue: "#000000",
+    },
+    shadowBlur: {
+        type: ControlType.Number,
+        title: "Shadow Blur",
+        defaultValue: 20,
+        min: 0,
+        max: 80,
+        step: 1,
+    },
+    shadowOpacity: {
+        type: ControlType.Number,
+        title: "Shadow Opacity",
+        defaultValue: 0.24,
+        min: 0,
+        max: 1,
+        step: 0.01,
     },
     barCount: {
         type: ControlType.Number,

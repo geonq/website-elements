@@ -4,17 +4,20 @@ import { addPropertyControls, ControlType } from "framer"
 const STORAGE_KEY = "framer-theme-preference"
 const STYLE_ID = "framer-theme-override"
 
-export default function ThemeToggle({
-    width = 56,
-    trackColorLight = "#E5E7EB",
-    trackColorDark = "#4F46E5",
-    thumbColor = "#FFFFFF",
-}: {
-    width?: number
-    trackColorLight?: string
-    trackColorDark?: string
-    thumbColor?: string
-}) {
+/**
+ * Theme toggle pill that switches Framer's variable-based colors.
+ *
+ * @framerSupportedLayoutWidth fixed
+ * @framerSupportedLayoutHeight fixed
+ * @framerIntrinsicWidth 56
+ * @framerIntrinsicHeight 28
+ */
+export function ThemeToggle(props: any) {
+    const width = typeof props.width === "number" ? props.width : 56
+    const trackColorLight = props.trackColorLight || "#E5E7EB"
+    const trackColorDark = props.trackColorDark || "#4F46E5"
+    const thumbColor = props.thumbColor || "#FFFFFF"
+
     const [isDark, setIsDark] = useState(true)
 
     useEffect(() => {
@@ -24,34 +27,39 @@ export default function ThemeToggle({
         const lightTokens: Record<string, string> = {}
 
         try {
-            for (const sheet of Array.from(document.styleSheets)) {
-                let rules: CSSRuleList | null = null
+            const sheets = document.styleSheets
+            for (let s = 0; s < sheets.length; s++) {
+                const sheet = sheets[s]
+                let rules = null
                 try {
                     rules = sheet.cssRules
                 } catch (_) {
                     continue
                 }
                 if (!rules) continue
-                for (const rule of Array.from(rules)) {
-                    if (rule instanceof CSSStyleRule && rule.selectorText === "body") {
+                for (let r = 0; r < rules.length; r++) {
+                    const rule = rules[r]
+                    if (rule.type === 1 && rule.selectorText === "body") {
                         for (let i = 0; i < rule.style.length; i++) {
                             const p = rule.style[i]
-                            if (p.startsWith("--token-")) {
+                            if (p.indexOf("--token-") === 0) {
                                 lightTokens[p] = rule.style.getPropertyValue(p).trim()
                             }
                         }
                     } else if (
-                        rule instanceof CSSMediaRule &&
+                        rule.type === 4 &&
                         rule.conditionText &&
                         rule.conditionText.indexOf("prefers-color-scheme") !== -1 &&
                         rule.conditionText.indexOf("dark") !== -1
                     ) {
-                        for (const inner of Array.from(rule.cssRules)) {
-                            if (inner instanceof CSSStyleRule && inner.selectorText === "body") {
-                                for (let i = 0; i < inner.style.length; i++) {
-                                    const p = inner.style[i]
-                                    if (p.startsWith("--token-")) {
-                                        darkTokens[p] = inner.style.getPropertyValue(p).trim()
+                        const inner = rule.cssRules
+                        for (let j = 0; j < inner.length; j++) {
+                            const ir = inner[j]
+                            if (ir.type === 1 && ir.selectorText === "body") {
+                                for (let i = 0; i < ir.style.length; i++) {
+                                    const p = ir.style[i]
+                                    if (p.indexOf("--token-") === 0) {
+                                        darkTokens[p] = ir.style.getPropertyValue(p).trim()
                                     }
                                 }
                             }
@@ -61,23 +69,20 @@ export default function ThemeToggle({
             }
         } catch (_) {}
 
-        let style = document.getElementById(STYLE_ID) as HTMLStyleElement | null
+        let style = document.getElementById(STYLE_ID)
         if (!style) {
             style = document.createElement("style")
             style.id = STYLE_ID
             document.head.appendChild(style)
         }
 
-        const darkVars = Object.entries(darkTokens)
-            .map(([k, v]) => `${k}:${v}`)
-            .join(";")
-        const lightVars = Object.entries(lightTokens)
-            .map(([k, v]) => `${k}:${v}`)
-            .join(";")
+        const darkVars = Object.keys(darkTokens).map((k) => k + ":" + darkTokens[k]).join(";")
+        const lightVars = Object.keys(lightTokens).map((k) => k + ":" + lightTokens[k]).join(";")
+        style.textContent =
+            'html[data-theme="dark"] body{' + darkVars + "}" +
+            'html[data-theme="light"] body{' + lightVars + "}"
 
-        style.textContent = `html[data-theme="dark"] body{${darkVars}} html[data-theme="light"] body{${lightVars}}`
-
-        let stored: string | null = null
+        let stored = null
         try {
             stored = localStorage.getItem(STORAGE_KEY)
         } catch (_) {}
@@ -88,7 +93,7 @@ export default function ThemeToggle({
     }, [])
 
     function toggle() {
-        if (typeof window === "undefined" || typeof document === "undefined") return
+        if (typeof document === "undefined") return
         const next = !isDark
         document.documentElement.setAttribute("data-theme", next ? "dark" : "light")
         try {
@@ -105,14 +110,17 @@ export default function ThemeToggle({
         <div
             onClick={toggle}
             style={{
-                width,
-                height,
+                width: width,
+                height: height,
+                minWidth: width,
+                minHeight: height,
                 borderRadius: height / 2,
                 backgroundColor: isDark ? trackColorDark : trackColorLight,
                 position: "relative",
                 cursor: "pointer",
                 transition: "background-color 0.3s ease",
                 flexShrink: 0,
+                display: "inline-block",
             }}
         >
             <div
@@ -130,6 +138,13 @@ export default function ThemeToggle({
             />
         </div>
     )
+}
+
+ThemeToggle.defaultProps = {
+    width: 56,
+    trackColorLight: "#E5E7EB",
+    trackColorDark: "#4F46E5",
+    thumbColor: "#FFFFFF",
 }
 
 addPropertyControls(ThemeToggle, {
@@ -156,3 +171,5 @@ addPropertyControls(ThemeToggle, {
         defaultValue: "#FFFFFF",
     },
 })
+
+export default ThemeToggle

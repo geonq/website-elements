@@ -58,7 +58,7 @@ export default function ParticleSymbols({
 
         // re-resolve when Framer switches dark/light mode (changes class on <html>)
         const observer = new MutationObserver(refreshColor)
-        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-framer-theme"] })
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-framer-theme", "data-theme"] })
 
         let animId: number
         let W: number, H: number, dpr: number
