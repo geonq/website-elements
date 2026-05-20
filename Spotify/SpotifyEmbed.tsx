@@ -31,9 +31,9 @@ export default function SpotifyNowPlaying(props) {
         maxExpandedWidth,
         shadowColor,
         shadowBlur,
-        shadowOpacity,
         notListeningColor,
         albumPlaceholderColor,
+        expandedTextColor,
     } = props
 
     const [data, setData] = useState(null)
@@ -228,10 +228,11 @@ export default function SpotifyNowPlaying(props) {
         if (color.startsWith("#")) {
             let hex = color.slice(1)
             if (hex.length === 3) {
-                hex = hex
-                    .split("")
-                    .map((char) => char + char)
-                    .join("")
+                hex = hex.split("").map((c: string) => c + c).join("")
+            }
+            // 8-char hex (#RRGGBBAA) — Framer uses this when opacity is set in the picker
+            if (hex.length === 8) {
+                hex = hex.slice(0, 6)
             }
             if (hex.length === 6) {
                 const r = parseInt(hex.slice(0, 2), 16)
@@ -243,7 +244,7 @@ export default function SpotifyNowPlaying(props) {
 
         const rgbMatch = color.match(/rgba?\(([^)]+)\)/i)
         if (rgbMatch) {
-            const parts = rgbMatch[1].split(",").map((part) => part.trim())
+            const parts = rgbMatch[1].split(",").map((p: string) => p.trim())
             if (parts.length >= 3) {
                 return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})`
             }
@@ -410,14 +411,45 @@ export default function SpotifyNowPlaying(props) {
     const trackBackground = withAlpha(mutedColor, 0.42)
     const progressFillGlow = withAlpha(accent, 0.1)
 
-    const resolvedShadowColor = shadowColor || "#000000"
     const resolvedShadowBlur = typeof shadowBlur === "number" ? shadowBlur : 20
-    const resolvedShadowOpacity = typeof shadowOpacity === "number" ? shadowOpacity : 0.24
-    const shadowResting = `0 8px ${resolvedShadowBlur}px ${withAlpha(resolvedShadowColor, resolvedShadowOpacity)}`
-    const shadowElevated = `0 18px ${Math.round(resolvedShadowBlur * 2.4)}px ${withAlpha(resolvedShadowColor, Math.min(1, resolvedShadowOpacity * 1.75))}`
+
+    const parseShadowRGBA = (color: string | undefined) => {
+        if (!color) return null
+        if (color.startsWith("#")) {
+            let hex = color.slice(1)
+            if (hex.length === 3) hex = hex.split("").map((c: string) => c + c).join("")
+            if (hex.length === 8) return {
+                r: parseInt(hex.slice(0, 2), 16),
+                g: parseInt(hex.slice(2, 4), 16),
+                b: parseInt(hex.slice(4, 6), 16),
+                a: parseInt(hex.slice(6, 8), 16) / 255,
+            }
+            if (hex.length === 6) return {
+                r: parseInt(hex.slice(0, 2), 16),
+                g: parseInt(hex.slice(2, 4), 16),
+                b: parseInt(hex.slice(4, 6), 16),
+                a: 1,
+            }
+        }
+        const m = color.match(/rgba?\(([^)]+)\)/i)
+        if (m) {
+            const p = m[1].split(",")
+            return { r: +p[0], g: +p[1], b: +p[2], a: p.length >= 4 ? +p[3] : 1 }
+        }
+        return null
+    }
+
+    const sp = parseShadowRGBA(shadowColor)
+    const shadowResting = sp
+        ? `0 8px ${resolvedShadowBlur}px rgba(${sp.r},${sp.g},${sp.b},${sp.a})`
+        : `0 8px ${resolvedShadowBlur}px ${shadowColor || "rgba(0,0,0,0.24)"}`
+    const shadowElevated = sp
+        ? `0 18px ${Math.round(resolvedShadowBlur * 2.4)}px rgba(${sp.r},${sp.g},${sp.b},${Math.min(1, sp.a * 1.75)})`
+        : `0 18px ${Math.round(resolvedShadowBlur * 2.4)}px ${shadowColor || "rgba(0,0,0,0.42)"}`
 
     const resolvedNotListeningColor = notListeningColor || mutedColor
     const resolvedAlbumPlaceholderColor = albumPlaceholderColor || mutedColor
+    const resolvedExpandedTextColor = expandedTextColor || mutedColor
 
     const topPaddingTop = shellExpanded ? outerPaddingY : innerPadding
     const topPaddingBottom = shellExpanded ? expandedTopBottomPadding : innerPadding
@@ -900,7 +932,7 @@ export default function SpotifyNowPlaying(props) {
                                         fontWeight: 600,
                                         textTransform: "uppercase",
                                         letterSpacing: 1.4,
-                                        color: mutedColor,
+                                        color: resolvedExpandedTextColor,
                                         display: "flex",
                                         alignItems: "center",
                                         gap: 5,
@@ -937,7 +969,7 @@ export default function SpotifyNowPlaying(props) {
                                     style={{
                                         fontSize: 11,
                                         lineHeight: `${artistLineHeight}px`,
-                                        color: mutedColor,
+                                        color: resolvedExpandedTextColor,
                                         whiteSpace: "nowrap",
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
@@ -1044,7 +1076,7 @@ export default function SpotifyNowPlaying(props) {
                                 display: "flex",
                                 justifyContent: "space-between",
                                 fontSize: 10,
-                                color: mutedColor,
+                                color: resolvedExpandedTextColor,
                                 fontVariantNumeric: "tabular-nums",
                                 lineHeight: "10px",
                             }}
@@ -1143,6 +1175,11 @@ addPropertyControls(SpotifyNowPlaying, {
         title: "Album Placeholder",
         defaultValue: "#52525B",
     },
+    expandedTextColor: {
+        type: ControlType.Color,
+        title: "Expanded Text",
+        defaultValue: "#52525B",
+    },
     shadowColor: {
         type: ControlType.Color,
         title: "Shadow Color",
@@ -1155,14 +1192,6 @@ addPropertyControls(SpotifyNowPlaying, {
         min: 0,
         max: 80,
         step: 1,
-    },
-    shadowOpacity: {
-        type: ControlType.Number,
-        title: "Shadow Opacity",
-        defaultValue: 0.24,
-        min: 0,
-        max: 1,
-        step: 0.01,
     },
     barCount: {
         type: ControlType.Number,
