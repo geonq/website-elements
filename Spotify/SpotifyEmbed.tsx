@@ -29,7 +29,8 @@ export default function SpotifyNowPlaying(props) {
         collapsedIdleWidth,
         collapsedHeight,
         maxExpandedWidth,
-        shadowColor,
+        shadowColorLight,
+        shadowColorDark,
         shadowBlur,
         notListeningColor,
         albumPlaceholderColor,
@@ -40,6 +41,17 @@ export default function SpotifyNowPlaying(props) {
     const [progress, setProgress] = useState(0)
     const [extractedColor, setExtractedColor] = useState(null)
     const [hoverPhase, setHoverPhase] = useState("collapsed")
+    const [themeMode, setThemeMode] = useState("dark")
+
+    useEffect(() => {
+        const update = () => setThemeMode(
+            document.documentElement.getAttribute("data-theme") || "dark"
+        )
+        update()
+        const obs = new MutationObserver(update)
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] })
+        return () => obs.disconnect()
+    }, [])
 
     const progressBaseRef = useRef({ serverProgress: 0, fetchedAt: 0 })
     const lastArtUrlRef = useRef(null)
@@ -439,13 +451,14 @@ export default function SpotifyNowPlaying(props) {
         return null
     }
 
-    const sp = parseShadowRGBA(shadowColor)
+    const activeShadowColor = themeMode === "dark" ? shadowColorDark : shadowColorLight
+    const sp = parseShadowRGBA(activeShadowColor)
     const shadowResting = sp
         ? `0 8px ${resolvedShadowBlur}px rgba(${sp.r},${sp.g},${sp.b},${sp.a})`
-        : `0 8px ${resolvedShadowBlur}px ${shadowColor || "rgba(0,0,0,0.24)"}`
+        : `0 8px ${resolvedShadowBlur}px ${activeShadowColor || "rgba(0,0,0,0.24)"}`
     const shadowElevated = sp
         ? `0 18px ${Math.round(resolvedShadowBlur * 2.4)}px rgba(${sp.r},${sp.g},${sp.b},${Math.min(1, sp.a * 1.75)})`
-        : `0 18px ${Math.round(resolvedShadowBlur * 2.4)}px ${shadowColor || "rgba(0,0,0,0.42)"}`
+        : `0 18px ${Math.round(resolvedShadowBlur * 2.4)}px ${activeShadowColor || "rgba(0,0,0,0.42)"}`
 
     const resolvedNotListeningColor = notListeningColor || mutedColor
     const resolvedAlbumPlaceholderColor = albumPlaceholderColor || mutedColor
@@ -462,7 +475,7 @@ export default function SpotifyNowPlaying(props) {
               `width ${shellCollapseDuration}s ${easing} ${shellCollapseDelay}s`,
               `height ${shellCollapseDuration}s ${easing} ${shellCollapseDelay}s`,
               `border-radius ${shellCollapseDuration}s ${easing} ${shellCollapseDelay}s`,
-              `box-shadow ${shellCollapseDuration}s ease`,
+              `box-shadow ${shellCollapseDuration}s ease ${shellCollapseDelay}s`,
           ].join(", ")
         : [
               `width ${shellExpandDuration}s ${easing}`,
@@ -747,7 +760,7 @@ export default function SpotifyNowPlaying(props) {
                     overflow: "hidden",
                     transition: shellTransition,
                     fontFamily,
-                    boxShadow: shellElevated ? shadowElevated : shadowResting,
+                    boxShadow: shellExpanded ? shadowElevated : shadowResting,
                     display: "flex",
                     flexDirection: "column",
                     color: textColor,
@@ -1180,10 +1193,15 @@ addPropertyControls(SpotifyNowPlaying, {
         title: "Expanded Text",
         defaultValue: "#52525B",
     },
-    shadowColor: {
+    shadowColorLight: {
         type: ControlType.Color,
-        title: "Shadow Color",
-        defaultValue: "#000000",
+        title: "Shadow (Light)",
+        defaultValue: "#00000040",
+    },
+    shadowColorDark: {
+        type: ControlType.Color,
+        title: "Shadow (Dark)",
+        defaultValue: "#00000070",
     },
     shadowBlur: {
         type: ControlType.Number,
