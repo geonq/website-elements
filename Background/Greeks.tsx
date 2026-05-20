@@ -40,6 +40,8 @@ export default function ParticleSymbols({
     symbolColor = "#ffffff",
     minSize = 8,
     maxSize = 22,
+    driftAmplitude = 8,
+    driftSpeed = 0.002,
 }) {
     const canvasRef = useRef(null)
     const rawMouseRef = useRef({ x: -9999, y: -9999 })
@@ -58,9 +60,15 @@ export default function ParticleSymbols({
         const observer = new MutationObserver(refreshColor)
         observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-framer-theme"] })
 
-        let animId
-        let W, H, dpr
-        let particles: { x: number; y: number; hx: number; hy: number; vx: number; vy: number; symbol: string; size: number; base: number }[] = []
+        let animId: number
+        let W: number, H: number, dpr: number
+        type Particle = {
+            hx: number; hy: number; x: number; y: number; vx: number; vy: number
+            symbol: string; size: number; base: number
+            a1: number; r1: number; amp1: number; ph1: number
+            a2: number; r2: number; amp2: number; ph2: number
+        }
+        let particles: Particle[] = []
 
         function init() {
             dpr = window.devicePixelRatio || 1
@@ -71,18 +79,24 @@ export default function ParticleSymbols({
             ctx.scale(dpr, dpr)
 
             particles = Array.from({ length: count }, () => {
-                const x = Math.random() * W
-                const y = Math.random() * H
+                const hx = Math.random() * W
+                const hy = Math.random() * H
+                const amp = driftAmplitude * (0.4 + Math.random() * 0.8)
+                const a1 = Math.random() * Math.PI * 2
+                const a2 = Math.random() * Math.PI * 2
+                const ph1 = Math.random() * Math.PI * 2
+                const ph2 = Math.random() * Math.PI * 2
+                const amp1 = amp * 0.65
+                const amp2 = amp * 0.45
+                const x = hx + Math.cos(a1) * amp1 + Math.sin(a2 + ph2) * amp2
+                const y = hy + Math.sin(a1 + ph1) * amp1 + Math.cos(a2) * amp2
                 return {
-                    x,
-                    y,
-                    hx: x,
-                    hy: y,
-                    vx: 0,
-                    vy: 0,
+                    hx, hy, x, y, vx: 0, vy: 0,
                     symbol: SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)],
                     size: minSize + Math.random() * (maxSize - minSize),
                     base: 0.1 + Math.random() * 0.35,
+                    a1, r1: driftSpeed * (0.6 + Math.random() * 0.8), amp1, ph1,
+                    a2, r2: driftSpeed * (0.3 + Math.random() * 0.5), amp2, ph2,
                 }
             })
         }
@@ -97,20 +111,26 @@ export default function ParticleSymbols({
             const my = raw.y < -999 ? -9999 : raw.y - rect.top
 
             for (const p of particles) {
-                // home → mouse: determines if this particle is in range
-                const hdx = mx - p.hx
-                const hdy = my - p.hy
+                // advance drift oscillators
+                p.a1 += p.r1
+                p.a2 += p.r2
+                const dhx = p.hx + Math.cos(p.a1) * p.amp1 + Math.sin(p.a2 + p.ph2) * p.amp2
+                const dhy = p.hy + Math.sin(p.a1 + p.ph1) * p.amp1 + Math.cos(p.a2) * p.amp2
+
+                // drifting home → mouse distance (gravity anchor moves with drift)
+                const hdx = mx - dhx
+                const hdy = my - dhy
                 const homeDist = Math.sqrt(hdx * hdx + hdy * hdy)
 
-                // Spring target: home nudged toward mouse, capped so it never reaches cursor
-                let tx = p.hx
-                let ty = p.hy
+                // Spring target: drifting home nudged toward mouse, capped so it never reaches cursor
+                let tx = dhx
+                let ty = dhy
                 if (homeDist > 1 && homeDist < attractRadius) {
                     const pull = (attractRadius - homeDist) / attractRadius
                     const maxPull = attractRadius * 0.35 * attractStrength * 0.08
                     const offset = maxPull * pull * pull
-                    tx = p.hx + (hdx / homeDist) * offset
-                    ty = p.hy + (hdy / homeDist) * offset
+                    tx = dhx + (hdx / homeDist) * offset
+                    ty = dhy + (hdy / homeDist) * offset
                 }
 
                 p.vx += (tx - p.x) * returnSpeed
@@ -159,6 +179,8 @@ export default function ParticleSymbols({
         symbolColor,
         minSize,
         maxSize,
+        driftAmplitude,
+        driftSpeed,
     ])
 
     return (
@@ -231,5 +253,21 @@ addPropertyControls(ParticleSymbols, {
         min: 8,
         max: 60,
         title: "Max size",
+    },
+    driftAmplitude: {
+        type: ControlType.Number,
+        defaultValue: 8,
+        min: 0,
+        max: 40,
+        step: 1,
+        title: "Drift range (px)",
+    },
+    driftSpeed: {
+        type: ControlType.Number,
+        defaultValue: 0.002,
+        min: 0.0005,
+        max: 0.01,
+        step: 0.0005,
+        title: "Drift speed",
     },
 })
