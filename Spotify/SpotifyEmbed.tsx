@@ -72,6 +72,9 @@ const resolveColorToCss = (color: string): string => {
     return computed || color
 }
 
+const isCoarsePointer = () =>
+    typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches
+
 let _measureCanvas: HTMLCanvasElement | null = null
 const measureTextWidth = (text: string, fontSize: number, fontWeight = 400, letterSpacing = 0): number => {
     const content = text?.trim?.() ?? ""
@@ -136,6 +139,7 @@ export default function SpotifyNowPlaying(props) {
         obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] })
         return () => obs.disconnect()
     }, [])
+
 
     const progressBaseRef = useRef({ serverProgress: 0, fetchedAt: 0 })
     const lastArtUrlRef = useRef(null)
@@ -380,6 +384,21 @@ export default function SpotifyNowPlaying(props) {
             setHoverPhase("collapsed")
             hoverTimerRef.current = null
         }, Math.round((shellCollapseDelay + shellCollapseDuration) * 1000))
+    }
+
+    const handlePillClick = (e: MouseEvent) => {
+        e.stopPropagation()
+        if (!isPlaying || !data?.track_id) return
+        const spotifyUrl = `https://open.spotify.com/track/${data.track_id}`
+        if (!isCoarsePointer()) {
+            window.open(spotifyUrl, "_blank", "noopener,noreferrer")
+            return
+        }
+        if (shellElevated) {
+            window.open(spotifyUrl, "_blank", "noopener,noreferrer")
+        } else {
+            expandHoverCard()
+        }
     }
 
     const albumSize = collapsedHeight - innerPadding * 2
@@ -686,6 +705,7 @@ export default function SpotifyNowPlaying(props) {
 
     return (
         <div
+            onClick={() => { if (isCoarsePointer() && shellElevated) collapseHoverCard() }}
             style={{
                 width: "100%",
                 height: "100%",
@@ -734,8 +754,9 @@ export default function SpotifyNowPlaying(props) {
                 }
             `}</style>
             <div
-                onMouseEnter={expandHoverCard}
-                onMouseLeave={collapseHoverCard}
+                onMouseEnter={() => { if (!isCoarsePointer()) expandHoverCard() }}
+                onMouseLeave={() => { if (!isCoarsePointer()) collapseHoverCard() }}
+                onClick={handlePillClick}
                 style={{
                     width: shellExpanded ? expandedWidth : collapsedWidth,
                     height: shellExpanded ? expandedHeight : collapsedHeight,
@@ -754,6 +775,7 @@ export default function SpotifyNowPlaying(props) {
                     flexDirection: "column",
                     color: textColor,
                     willChange: "width, height, border-radius",
+                    cursor: isPlaying ? "pointer" : "default",
                 }}
             >
                 <div
