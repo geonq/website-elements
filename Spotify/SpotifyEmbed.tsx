@@ -146,6 +146,7 @@ export default function SpotifyNowPlaying(props) {
     const barRefs = useRef([])
     const rafRef = useRef(null)
     const hoverTimerRef = useRef(null)
+    const pillRef = useRef(null)
 
     // ---- Poll the Worker ----
     useEffect(() => {
@@ -300,6 +301,17 @@ export default function SpotifyNowPlaying(props) {
         }
         setHoverPhase("collapsed")
     }, [isPlaying])
+
+    useEffect(() => {
+        if (!isCoarsePointer() || !shellElevated) return
+        const handler = (e: TouchEvent) => {
+            if (pillRef.current && !(pillRef.current as HTMLElement).contains(e.target as Node)) {
+                collapseHoverCard()
+            }
+        }
+        document.addEventListener("touchstart", handler, { passive: true })
+        return () => document.removeEventListener("touchstart", handler)
+    }, [hoverPhase])
 
     useEffect(() => {
         return () => {
@@ -754,6 +766,7 @@ export default function SpotifyNowPlaying(props) {
                 }
             `}</style>
             <div
+                ref={pillRef}
                 onMouseEnter={() => { if (!isCoarsePointer()) expandHoverCard() }}
                 onMouseLeave={() => { if (!isCoarsePointer()) collapseHoverCard() }}
                 onClick={handlePillClick}
