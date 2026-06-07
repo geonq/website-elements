@@ -1,24 +1,11 @@
 // @ts-nocheck
 // backnforth.tsx — Framer CODE OVERRIDES for macOS-Finder-style back/forward navigation.
 //
-// ─── WIRING ───────────────────────────────────────────────────────────────────
-//   INSIDE the Smart Component source (right-click → Edit Code in Framer):
-//   Add the SMART COMPONENT PATCH block below after your useVariantState line.
-//
-//   On the canvas (applied to elements INSIDE the Smart Component):
-//     • Each sidebar item     → withGoTo<Name>   (removes On Tap → Change Variant)
-//     • Left arrow  < button  → withBack
-//     • Right arrow > button  → withForward
-// ─────────────────────────────────────────────────────────────────────────────
-//
 // ─── SMART COMPONENT PATCH ───────────────────────────────────────────────────
 //   Paste this inside your Smart Component, right after useVariantState:
 //
 //   useEffect(() => {
-//       const handler = (e: any) => {
-//           const s = e.detail
-//           setVariant(s.entries[s.index] ?? "about me")
-//       }
+//       const handler = (e: any) => setVariant(e.detail.entries[e.detail.index] ?? "about me")
 //       window.addEventListener("finder:nav", handler)
 //       return () => window.removeEventListener("finder:nav", handler)
 //   }, [])
@@ -28,106 +15,91 @@
 import type { ComponentType } from "react"
 import { useState, useEffect } from "react"
 
-// ──────────────────────────── CONFIG ────────────────────────────
-
+// ── CONFIG ───────────────────────────────────────────────────────
 const PRIMARY_VARIANT = "about me"
 const MAX_HISTORY = 16
 const STORAGE_KEY = "finder-nav-history"
 const NAV_EVENT = "finder:nav"
 const DISABLED_OPACITY = 0.5
 
-// ──────────────────────────── TYPES ────────────────────────────
-
-type HistoryState = {
-    entries: string[]
-    index: number
-}
-
-// ──────────────────────────── STATE ────────────────────────────
-
+// ── TYPES ────────────────────────────────────────────────────────
+type HistoryState = { entries: string[]; index: number }
 const FALLBACK: HistoryState = { entries: [PRIMARY_VARIANT], index: 0 }
 
+// ── PERSISTENCE ──────────────────────────────────────────────────
 function loadHistory(): HistoryState {
     if (typeof window === "undefined") return FALLBACK
     try {
         const raw = window.sessionStorage.getItem(STORAGE_KEY)
         if (!raw) return FALLBACK
         const p = JSON.parse(raw)
-        if (!p || !Array.isArray(p.entries) || !p.entries.length || typeof p.index !== "number") return FALLBACK
+        if (!p?.entries?.length || typeof p.index !== "number") return FALLBACK
         const entries = p.entries.filter((v: unknown) => typeof v === "string").slice(0, MAX_HISTORY)
         if (!entries.length) return FALLBACK
         return { entries, index: Math.min(Math.max(0, Math.floor(p.index)), entries.length - 1) }
     } catch { return FALLBACK }
 }
 
-function broadcastNav(state: HistoryState) {
-    if (typeof window === "undefined") return
-    try { window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch {}
-    window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: state }))
-}
+// ── MODULE-LEVEL STORE ───────────────────────────────────────────
+// All override instances share one store — no echo, no double setState.
+let _store: HistoryState = loadHistory()
+const _subs = new Set<() => void>()
 
-function useNav(): [HistoryState, (s: HistoryState) => void] {
-    const [state, setState] = useState<HistoryState>(loadHistory)
-
-    useEffect(() => {
-        const handler = (e: any) => setState(e.detail)
-        window.addEventListener(NAV_EVENT, handler)
-        return () => window.removeEventListener(NAV_EVENT, handler)
-    }, [])
-
-    const update = (next: HistoryState) => {
-        setState(next)
-        broadcastNav(next)
+function setNav(next: HistoryState) {
+    if (next === _store) return
+    _store = next
+    try { window?.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next)) } catch {}
+    // Notify all sibling override instances
+    _subs.forEach(fn => fn())
+    // Notify the Smart Component
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: next }))
     }
-
-    return [state, update]
 }
 
-// ──────────────────────────── HISTORY OPS ────────────────────────────
-
-function capHistory(entries: string[]): string[] {
-    if (entries.length <= MAX_HISTORY) return entries
-    const overflow = entries.length - MAX_HISTORY
-    return [entries[0], ...entries.slice(1 + overflow)]
+function useNav(): [HistoryState, typeof setNav] {
+    const [, tick] = useState(0)
+    useEffect(() => {
+        const fn = () => tick(n => n + 1)
+        _subs.add(fn)
+        return () => { _subs.delete(fn) }
+    }, [])
+    return [_store, setNav]
 }
 
+// ── HISTORY OPS ──────────────────────────────────────────────────
 function pushVariant(state: HistoryState, target: string): HistoryState {
-    if (!target) return state
-    if (state.entries[state.index] === target) return state
+    if (!target || state.entries[state.index] === target) return state
     const truncated = state.entries.slice(0, state.index + 1)
-    const capped = capHistory([...truncated, target])
-    return { entries: capped, index: capped.length - 1 }
+    const next = [...truncated, target]
+    // Always preserve entry[0] when capping
+    const entries = next.length <= MAX_HISTORY
+        ? next
+        : [next[0], ...next.slice(next.length - MAX_HISTORY + 1)]
+    return { entries, index: entries.length - 1 }
 }
 
-// ──────────────────────────── OVERRIDES ────────────────────────────
+// ── OVERRIDES ────────────────────────────────────────────────────
 
-// goTo — applied to sidebar items inside the Smart Component.
-// Pushes to history (fires finder:nav → Smart Component patch calls setVariant).
-// Also shows active state: opacity 1 when current page, 0.8 otherwise.
 function goTo(target: string) {
-    return (Component: any): ComponentType => {
-        return (props: any) => {
+    return (Component: any): ComponentType =>
+        (props: any) => {
             const [nav, update] = useNav()
             const isActive = (nav.entries[nav.index] ?? PRIMARY_VARIANT) === target
-            const handleClick = (event: any) => {
-                const next = pushVariant(nav, target)
-                if (next !== nav) update(next)
-                props.onClick?.(event)
-            }
             return (
                 <Component
                     {...props}
-                    onClick={handleClick}
-                    style={{
-                        ...props.style,
-                        cursor: "pointer",
-                        opacity: isActive ? 1 : 0.8,
-                        transition: "opacity 0.15s ease",
+                    onClick={(e: any) => {
+                        const next = pushVariant(nav, target)
+                        if (next !== nav) update(next)
+                        props.onClick?.(e)
                     }}
+                    animate={{ opacity: isActive ? 1 : 0.8 }}
+                    transition={{ duration: 0.15, ease: "easeOut" }}
+                    style={{ ...props.style, cursor: "pointer" }}
                 />
             )
         }
-    }
 }
 
 export function withGoToAboutMe(C: any): ComponentType { return goTo("about me")(C) }
@@ -141,7 +113,6 @@ export function withGoToAscii(C: any): ComponentType { return goTo("ascii")(C) }
 export function withGoToLetterboxd(C: any): ComponentType { return goTo("letterboxd")(C) }
 export function withGoToGoodreads(C: any): ComponentType { return goTo("goodreads")(C) }
 
-// withBack — left arrow. Fades to 0.5 and disables clicks when at the floor.
 export function withBack(Component: any): ComponentType {
     return (props: any) => {
         const [nav, update] = useNav()
@@ -149,24 +120,19 @@ export function withBack(Component: any): ComponentType {
         return (
             <Component
                 {...props}
-                onClick={(event: any) => {
+                onClick={(e: any) => {
                     if (!can) return
                     update({ ...nav, index: nav.index - 1 })
-                    props.onClick?.(event)
+                    props.onClick?.(e)
                 }}
-                style={{
-                    ...props.style,
-                    opacity: can ? 1 : DISABLED_OPACITY,
-                    pointerEvents: can ? "auto" : "none",
-                    cursor: can ? "pointer" : "default",
-                    transition: "opacity 0.2s ease",
-                }}
+                animate={{ opacity: can ? 1 : DISABLED_OPACITY }}
+                transition={{ duration: 0.2, ease: "easeOut" }}
+                style={{ ...props.style, pointerEvents: can ? "auto" : "none", cursor: can ? "pointer" : "default" }}
             />
         )
     }
 }
 
-// withForward — right arrow. Fades to 0.5 and disables clicks when no forward history.
 export function withForward(Component: any): ComponentType {
     return (props: any) => {
         const [nav, update] = useNav()
@@ -174,18 +140,14 @@ export function withForward(Component: any): ComponentType {
         return (
             <Component
                 {...props}
-                onClick={(event: any) => {
+                onClick={(e: any) => {
                     if (!can) return
                     update({ ...nav, index: nav.index + 1 })
-                    props.onClick?.(event)
+                    props.onClick?.(e)
                 }}
-                style={{
-                    ...props.style,
-                    opacity: can ? 1 : DISABLED_OPACITY,
-                    pointerEvents: can ? "auto" : "none",
-                    cursor: can ? "pointer" : "default",
-                    transition: "opacity 0.2s ease",
-                }}
+                animate={{ opacity: can ? 1 : DISABLED_OPACITY }}
+                transition={{ duration: 0.2, ease: "easeOut" }}
+                style={{ ...props.style, pointerEvents: can ? "auto" : "none", cursor: can ? "pointer" : "default" }}
             />
         )
     }
