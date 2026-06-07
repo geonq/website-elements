@@ -1,26 +1,39 @@
 // @ts-nocheck
 // backnforth.tsx — Framer CODE OVERRIDES for macOS-Finder-style back/forward navigation.
 //
-// ─── SMART COMPONENT PATCH ───────────────────────────────────────────────────
-//   Paste this inside your Smart Component, right after useVariantState:
+// SETUP
+//   • withContent — apply to the CONTENT COMPONENT INSTANCE (the layer whose
+//     properties panel shows the "Variant" dropdown), in the NORMAL editor.
+//     Do NOT apply it inside the component's edit-variants view — that attaches
+//     to a variant's contents instead of the instance, and nothing will switch.
+//     This override drives the instance's `variant` prop from the history store.
+//   • withBack / withForward — the navigation arrows.
+//   • withRed / withYellow / withGreen — the traffic-light buttons.
+//   • withGoTo* — the sidebar tabs; each pushes its variant onto the history.
+//   • No Framer click interactions are needed — the code does all the switching.
 //
-//   useEffect(() => {
-//       const handler = (e: any) => setVariant(e.detail.entries[e.detail.index] ?? "about me")
-//       window.addEventListener("finder:nav", handler)
-//       return () => window.removeEventListener("finder:nav", handler)
-//   }, [])
+// MOBILE
+//   The shared history holds the LOGICAL page name (= your desktop variant name).
+//   Mobile variants are those same names + " mobile". So mobile reuses ALL the
+//   same overrides (tabs, back, forward, red, yellow, green) — the ONLY change is
+//   the content instance: apply withContentMobile (instead of withContent) to the
+//   Phone-breakpoint content instance. It appends " mobile", so the store value
+//   "about me" renders the "about me mobile" variant. No mobile tab overrides
+//   needed; just reuse withGoToAboutMe etc. on the mobile buttons too.
 //
-// ─────────────────────────────────────────────────────────────────────────────
+// The variant name strings below must match your Framer variant names EXACTLY
+// (case + spaces).
 
 import type { ComponentType } from "react"
-import { useState, useEffect } from "react"
+import { forwardRef } from "react"
+import { createStore } from "https://framer.com/m/framer/store.js@^1.0.0"
 
 // ── CONFIG ───────────────────────────────────────────────────────
 const PRIMARY_VARIANT = "about me"
 const MAX_HISTORY = 16
 const STORAGE_KEY = "finder-nav-history"
-const NAV_EVENT = "finder:nav"
 const DISABLED_OPACITY = 0.5
+const MOBILE_SUFFIX = " mobile" // mobile variants are the desktop names + this suffix
 
 // ── TYPES ────────────────────────────────────────────────────────
 type HistoryState = { entries: string[]; index: number }
@@ -40,31 +53,17 @@ function loadHistory(): HistoryState {
     } catch { return FALLBACK }
 }
 
-// ── MODULE-LEVEL STORE ───────────────────────────────────────────
-// All override instances share one store — no echo, no double setState.
-let _store: HistoryState = loadHistory()
-const _subs = new Set<() => void>()
-
-function setNav(next: HistoryState) {
-    if (next === _store) return
-    _store = next
-    try { window?.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next)) } catch {}
-    // Notify all sibling override instances
-    _subs.forEach(fn => fn())
-    // Notify the Smart Component
-    if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: next }))
-    }
+function persist(state: HistoryState) {
+    try { window?.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch {}
 }
 
-function useNav(): [HistoryState, typeof setNav] {
-    const [, tick] = useState(0)
-    useEffect(() => {
-        const fn = () => tick(n => n + 1)
-        _subs.add(fn)
-        return () => { _subs.delete(fn) }
-    }, [])
-    return [_store, setNav]
+// ── SHARED STORE (Framer createStore — reactive across all overrides) ─────────
+const useNav = createStore<HistoryState>(loadHistory())
+
+// Single mutation path: persist + push to the store.
+function commit(setNav: (s: HistoryState) => void, next: HistoryState) {
+    persist(next)
+    setNav(next)
 }
 
 // ── HISTORY OPS ──────────────────────────────────────────────────
@@ -79,71 +78,87 @@ function pushVariant(state: HistoryState, target: string): HistoryState {
     return { entries, index: entries.length - 1 }
 }
 
+function currentVariant(state: HistoryState): string {
+    return state.entries[state.index] ?? PRIMARY_VARIANT
+}
+
 // ── OVERRIDES ────────────────────────────────────────────────────
+
+// Drives the visible variant. Apply to the DESKTOP content component INSTANCE.
+export function withContent(Component: any): ComponentType {
+    return forwardRef((props: any, ref) => {
+        const [nav] = useNav()
+        return <Component ref={ref} {...props} variant={currentVariant(nav)} />
+    })
+}
+
+// Same as withContent, but appends " mobile". Apply to the MOBILE content INSTANCE.
+export function withContentMobile(Component: any): ComponentType {
+    return forwardRef((props: any, ref) => {
+        const [nav] = useNav()
+        return <Component ref={ref} {...props} variant={currentVariant(nav) + MOBILE_SUFFIX} />
+    })
+}
 
 function goTo(target: string) {
     return (Component: any): ComponentType =>
-        (props: any) => {
-            const [nav, update] = useNav()
-            const isActive = (nav.entries[nav.index] ?? PRIMARY_VARIANT) === target
+        forwardRef((props: any, ref) => {
+            const [nav, setNav] = useNav()
             return (
                 <Component
+                    ref={ref}
                     {...props}
                     onClick={(e: any) => {
                         const next = pushVariant(nav, target)
-                        if (next !== nav) update(next)
+                        if (next !== nav) commit(setNav, next)
                         props.onClick?.(e)
                     }}
-                    animate={{ opacity: isActive ? 1 : 0.8 }}
-                    transition={{ duration: 0.15, ease: "easeOut" }}
                     style={{ ...props.style, cursor: "pointer" }}
                 />
             )
-        }
+        })
 }
 
-// withYellow — switches to the "extra" variant (layout/animation handled in Framer)
+// "extra" is a planned variant — create it in Framer (and an "extra mobile"
+// copy) when ready. Until then, navigating to it falls back to the default.
+// Both overrides target it: withYellow is the traffic-light button; withExtra is
+// a generic alias to drop on any element that should open the extra variant.
+export function withExtra(C: any): ComponentType { return goTo("extra")(C) }
 export function withYellow(C: any): ComponentType { return goTo("extra")(C) }
 
-// withRed — resets nav history and returns to primary variant
 export function withRed(Component: any): ComponentType {
-    return (props: any) => (
-        <Component
-            {...props}
-            onClick={(e: any) => {
-                try { window?.sessionStorage.removeItem(STORAGE_KEY) } catch {}
-                setNav({ ...FALLBACK })
-                props.onClick?.(e)
-            }}
-            style={{ ...props.style, cursor: "pointer" }}
-        />
-    )
-}
-
-// withGreen — toggles browser fullscreen (like macOS green button / F11)
-export function withGreen(Component: any): ComponentType {
-    return (props: any) => {
-        const [fullscreen, setFullscreen] = useState(false)
-        useEffect(() => {
-            const handler = () => setFullscreen(!!document.fullscreenElement)
-            document.addEventListener("fullscreenchange", handler)
-            return () => document.removeEventListener("fullscreenchange", handler)
-        }, [])
+    return forwardRef((props: any, ref) => {
+        const [, setNav] = useNav()
         return (
             <Component
+                ref={ref}
                 {...props}
                 onClick={(e: any) => {
-                    if (!document.fullscreenElement) {
-                        document.documentElement.requestFullscreen?.()
-                    } else {
-                        document.exitFullscreen?.()
-                    }
+                    commit(setNav, { entries: [PRIMARY_VARIANT], index: 0 })
                     props.onClick?.(e)
                 }}
                 style={{ ...props.style, cursor: "pointer" }}
             />
         )
-    }
+    })
+}
+
+export function withGreen(Component: any): ComponentType {
+    return forwardRef((props: any, ref) => (
+        <Component
+            ref={ref}
+            {...props}
+            onClick={(e: any) => {
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen?.()
+                } else {
+                    document.exitFullscreen?.()
+                }
+                props.onClick?.(e)
+            }}
+            style={{ ...props.style, cursor: "pointer" }}
+        />
+    ))
 }
 
 export function withGoToAboutMe(C: any): ComponentType { return goTo("about me")(C) }
@@ -158,15 +173,16 @@ export function withGoToLetterboxd(C: any): ComponentType { return goTo("letterb
 export function withGoToGoodreads(C: any): ComponentType { return goTo("goodreads")(C) }
 
 export function withBack(Component: any): ComponentType {
-    return (props: any) => {
-        const [nav, update] = useNav()
+    return forwardRef((props: any, ref) => {
+        const [nav, setNav] = useNav()
         const can = nav.index > 0
         return (
             <Component
+                ref={ref}
                 {...props}
                 onClick={(e: any) => {
                     if (!can) return
-                    update({ ...nav, index: nav.index - 1 })
+                    commit(setNav, { entries: nav.entries, index: nav.index - 1 })
                     props.onClick?.(e)
                 }}
                 animate={{ opacity: can ? 1 : DISABLED_OPACITY }}
@@ -174,19 +190,20 @@ export function withBack(Component: any): ComponentType {
                 style={{ ...props.style, pointerEvents: can ? "auto" : "none", cursor: can ? "pointer" : "default" }}
             />
         )
-    }
+    })
 }
 
 export function withForward(Component: any): ComponentType {
-    return (props: any) => {
-        const [nav, update] = useNav()
+    return forwardRef((props: any, ref) => {
+        const [nav, setNav] = useNav()
         const can = nav.index < nav.entries.length - 1
         return (
             <Component
+                ref={ref}
                 {...props}
                 onClick={(e: any) => {
                     if (!can) return
-                    update({ ...nav, index: nav.index + 1 })
+                    commit(setNav, { entries: nav.entries, index: nav.index + 1 })
                     props.onClick?.(e)
                 }}
                 animate={{ opacity: can ? 1 : DISABLED_OPACITY }}
@@ -194,5 +211,5 @@ export function withForward(Component: any): ComponentType {
                 style={{ ...props.style, pointerEvents: can ? "auto" : "none", cursor: can ? "pointer" : "default" }}
             />
         )
-    }
+    })
 }
