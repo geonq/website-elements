@@ -102,6 +102,50 @@ function goTo(target: string) {
         }
 }
 
+// withYellow — switches to the "extra" variant (layout/animation handled in Framer)
+export function withYellow(C: any): ComponentType { return goTo("extra")(C) }
+
+// withRed — resets nav history and returns to primary variant
+export function withRed(Component: any): ComponentType {
+    return (props: any) => (
+        <Component
+            {...props}
+            onClick={(e: any) => {
+                try { window?.sessionStorage.removeItem(STORAGE_KEY) } catch {}
+                setNav({ ...FALLBACK })
+                props.onClick?.(e)
+            }}
+            style={{ ...props.style, cursor: "pointer" }}
+        />
+    )
+}
+
+// withGreen — toggles browser fullscreen (like macOS green button / F11)
+export function withGreen(Component: any): ComponentType {
+    return (props: any) => {
+        const [fullscreen, setFullscreen] = useState(false)
+        useEffect(() => {
+            const handler = () => setFullscreen(!!document.fullscreenElement)
+            document.addEventListener("fullscreenchange", handler)
+            return () => document.removeEventListener("fullscreenchange", handler)
+        }, [])
+        return (
+            <Component
+                {...props}
+                onClick={(e: any) => {
+                    if (!document.fullscreenElement) {
+                        document.documentElement.requestFullscreen?.()
+                    } else {
+                        document.exitFullscreen?.()
+                    }
+                    props.onClick?.(e)
+                }}
+                style={{ ...props.style, cursor: "pointer" }}
+            />
+        )
+    }
+}
+
 export function withGoToAboutMe(C: any): ComponentType { return goTo("about me")(C) }
 export function withGoToCurrentlyWorking(C: any): ComponentType { return goTo("currently working")(C) }
 export function withGoToOutOfOffice(C: any): ComponentType { return goTo("out of office")(C) }
