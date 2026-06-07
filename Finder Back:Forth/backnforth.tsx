@@ -1,17 +1,28 @@
 // @ts-nocheck
-// backnforth.tsx — Framer CODE OVERRIDES for macOS-Finder-style back/forward
-// navigation across a variant-based component.
+// backnforth.tsx — Framer CODE OVERRIDES for macOS-Finder-style back/forward navigation.
 //
 // ─── WIRING ───────────────────────────────────────────────────────────────────
-//   1. Select the component that has variants → Code Overrides → withFinder
-//   2. Left arrow wrapper div → withBack
-//   3. Right arrow wrapper div → withForward
-//   4. Each clickable folder/link element → withGoTo<VariantName>
-//      Remove any native "On Tap → Change to Variant" on those elements.
+//   INSIDE the Smart Component source (right-click → Edit Code in Framer):
+//   Add the SMART COMPONENT PATCH block below after your useVariantState line.
 //
-// ─── VARIANT NAMES ────────────────────────────────────────────────────────────
-//   Strings must match Framer variant display names exactly (case-sensitive).
-//   PRIMARY_VARIANT is the floor — you can never go Back past it.
+//   On the canvas (applied to elements INSIDE the Smart Component):
+//     • Each sidebar item     → withGoTo<Name>   (removes On Tap → Change Variant)
+//     • Left arrow  < button  → withBack
+//     • Right arrow > button  → withForward
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ─── SMART COMPONENT PATCH ───────────────────────────────────────────────────
+//   Paste this inside your Smart Component, right after useVariantState:
+//
+//   useEffect(() => {
+//       const handler = (e: any) => {
+//           const s = e.detail
+//           setVariant(s.entries[s.index] ?? "about me")
+//       }
+//       window.addEventListener("finder:nav", handler)
+//       return () => window.removeEventListener("finder:nav", handler)
+//   }, [])
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { ComponentType } from "react"
@@ -49,15 +60,12 @@ function loadHistory(): HistoryState {
     } catch { return FALLBACK }
 }
 
-// Saves to sessionStorage and broadcasts to all useNav() consumers via CustomEvent.
 function broadcastNav(state: HistoryState) {
     if (typeof window === "undefined") return
     try { window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch {}
     window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: state }))
 }
 
-// Each override instance gets its own local state, kept in sync via window events.
-// This avoids any createStore reactivity quirks with Framer's component system.
 function useNav(): [HistoryState, (s: HistoryState) => void] {
     const [state, setState] = useState<HistoryState>(loadHistory)
 
@@ -93,45 +101,28 @@ function pushVariant(state: HistoryState, target: string): HistoryState {
 
 // ──────────────────────────── OVERRIDES ────────────────────────────
 
-// ─── APPROACH A: Smart Component variant prop (may not work — see note) ───────
-// withFinder — apply to the Smart Component that has variants.
-// NOTE: Framer Smart Components treat `variant` as internal state, not a
-// controlled React prop. This HOC correctly passes the right variant but
-// Framer's own state machine may ignore it. If the component doesn't visually
-// switch, use APPROACH B below instead.
-export function withFinder(Component: any): ComponentType {
-    return ({ variant: _ignored, ...rest }: any) => {
-        const [nav] = useNav()
-        const current = nav.entries[nav.index] ?? PRIMARY_VARIANT
-        console.log("[withFinder] variant →", current, nav)
-        return <Component key={current} {...rest} variant={current} />
-    }
-}
-
-// ─── APPROACH B: Visibility-based page switching (guaranteed to work) ─────────
-// Instead of one Smart Component with variants, have 10 separate frames stacked
-// at the same position in Framer. Apply the matching showPage* override to each
-// frame. The active frame is fully visible; all others are opacity:0 + no clicks.
-//
-// Canvas setup:
-//   1. Create one Frame per page, all at the same position/size (use Stack or
-//      absolute position). Put the correct page content in each Frame.
-//   2. Remove withFinder. Apply showPageAboutMe to the "about me" Frame,
-//      showPageCurrentlyWorking to the "currently working" Frame, etc.
-//   3. Keep withBack, withForward, and all withGoTo* exactly as before.
-function showWhen(pageName: string) {
+// goTo — applied to sidebar items inside the Smart Component.
+// Pushes to history (fires finder:nav → Smart Component patch calls setVariant).
+// Also shows active state: opacity 1 when current page, 0.8 otherwise.
+function goTo(target: string) {
     return (Component: any): ComponentType => {
         return (props: any) => {
-            const [nav] = useNav()
-            const isActive = (nav.entries[nav.index] ?? PRIMARY_VARIANT) === pageName
+            const [nav, update] = useNav()
+            const isActive = (nav.entries[nav.index] ?? PRIMARY_VARIANT) === target
+            const handleClick = (event: any) => {
+                const next = pushVariant(nav, target)
+                if (next !== nav) update(next)
+                props.onClick?.(event)
+            }
             return (
                 <Component
                     {...props}
+                    onClick={handleClick}
                     style={{
                         ...props.style,
-                        opacity: isActive ? 1 : 0,
-                        pointerEvents: isActive ? "auto" : "none",
-                        transition: "opacity 0.2s ease",
+                        cursor: "pointer",
+                        opacity: isActive ? 1 : 0.8,
+                        transition: "opacity 0.15s ease",
                     }}
                 />
             )
@@ -139,35 +130,6 @@ function showWhen(pageName: string) {
     }
 }
 
-export function showPageAboutMe(C: any): ComponentType { return showWhen("about me")(C) }
-export function showPageCurrentlyWorking(C: any): ComponentType { return showWhen("currently working")(C) }
-export function showPageOutOfOffice(C: any): ComponentType { return showWhen("out of office")(C) }
-export function showPageAcademicRecord(C: any): ComponentType { return showWhen("academic record")(C) }
-export function showPageSpotifyPlaylist(C: any): ComponentType { return showWhen("spotify playlist")(C) }
-export function showPageCurrentInspo(C: any): ComponentType { return showWhen("current inspo")(C) }
-export function showPageRecommendedWatch(C: any): ComponentType { return showWhen("recommended watch")(C) }
-export function showPageAscii(C: any): ComponentType { return showWhen("ascii")(C) }
-export function showPageLetterboxd(C: any): ComponentType { return showWhen("letterboxd")(C) }
-export function showPageGoodreads(C: any): ComponentType { return showWhen("goodreads")(C) }
-
-// goTo factory — one override per destination. Applied to clickable folder elements.
-function goTo(target: string) {
-    return (Component: any): ComponentType => {
-        return (props: any) => {
-            const [nav, update] = useNav()
-            const handleClick = (event: any) => {
-                console.log("[goTo] click →", target, "from", nav.entries[nav.index])
-                const next = pushVariant(nav, target)
-                if (next !== nav) update(next)
-                props.onClick?.(event)
-            }
-            return <Component {...props} onClick={handleClick} />
-        }
-    }
-}
-
-// ─── Destination overrides — one per variant ───
-// export function required — export const from a factory is invisible to Framer's parser.
 export function withGoToAboutMe(C: any): ComponentType { return goTo("about me")(C) }
 export function withGoToCurrentlyWorking(C: any): ComponentType { return goTo("currently working")(C) }
 export function withGoToOutOfOffice(C: any): ComponentType { return goTo("out of office")(C) }
@@ -179,7 +141,7 @@ export function withGoToAscii(C: any): ComponentType { return goTo("ascii")(C) }
 export function withGoToLetterboxd(C: any): ComponentType { return goTo("letterboxd")(C) }
 export function withGoToGoodreads(C: any): ComponentType { return goTo("goodreads")(C) }
 
-// withBack — apply to the LEFT arrow wrapper. Fades to 0.5 when at the floor.
+// withBack — left arrow. Fades to 0.5 and disables clicks when at the floor.
 export function withBack(Component: any): ComponentType {
     return (props: any) => {
         const [nav, update] = useNav()
@@ -204,7 +166,7 @@ export function withBack(Component: any): ComponentType {
     }
 }
 
-// withForward — apply to the RIGHT arrow wrapper. Fades to 0.5 when no forward history.
+// withForward — right arrow. Fades to 0.5 and disables clicks when no forward history.
 export function withForward(Component: any): ComponentType {
     return (props: any) => {
         const [nav, update] = useNav()
