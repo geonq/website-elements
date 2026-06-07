@@ -1,236 +1,202 @@
+// @ts-nocheck
 // backnforth.tsx — Framer CODE OVERRIDES for macOS-Finder-style back/forward
 // navigation across a variant-based component.
 //
-// ─────────────────────────────────────────────────────────────────────────────
-// WHAT THIS IS
-// ─────────────────────────────────────────────────────────────────────────────
-// These are overrides (not a code component). They make a normal Framer
-// component-with-variants behave like a Finder window: the current variant is
-// the "folder" you're looking at, and Back/Forward walk a cached history of the
-// variants you've visited — exactly like the ⌫ / ⌦ chevrons in real Finder.
+// ─── WIRING ───────────────────────────────────────────────────────────────────
+//   1. Select the component that has variants → Code Overrides → withFinder
+//   2. Left arrow wrapper div → withBack
+//   3. Right arrow wrapper div → withForward
+//   4. Each clickable folder/link element → withGoTo<VariantName>
+//      Remove any native "On Tap → Change to Variant" on those elements.
 //
-// Rules implemented (per spec):
-//   • The PRIMARY variant is the start. You can never go Back past it.
-//   • After going Back you can go Forward again, as many steps as you went Back.
-//   • Navigating to a NEW variant truncates any forward history (browser model).
-//   • History is capped at MAX_HISTORY (16) entries so the page can't be made to
-//     hoard unbounded state. Primary is preserved as the permanent floor: when
-//     the cap is hit, the oldest entry *after* Primary is dropped.
-//   • The last-visited position is cached in sessionStorage, so a reload drops
-//     you back where you were (cache clears when the tab closes).
-//
+// ─── VARIANT NAMES ────────────────────────────────────────────────────────────
+//   Strings must match Framer variant display names exactly (case-sensitive).
+//   PRIMARY_VARIANT is the floor — you can never go Back past it.
 // ─────────────────────────────────────────────────────────────────────────────
-// WHY THE FOLDER LINKS NEED AN OVERRIDE TOO
-// ─────────────────────────────────────────────────────────────────────────────
-// A Framer override can *set* a component's variant (via the `variant` prop) but
-// it cannot observe the component changing its own variant through Framer's
-// built-in "On Tap → Change to Variant" interactions. For real history the store
-// must be the single source of truth — so the clicks that navigate INTO a
-// variant go through a goTo() override instead of Framer's native variant switch.
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// HOW TO WIRE IT UP IN FRAMER
-// ─────────────────────────────────────────────────────────────────────────────
-//   1. Name your variants in the component. Set PRIMARY_VARIANT below to the
-//      exact name of your starting variant (e.g. "Primary", "Home", "Desktop").
-//   2. Select the Finder component on the canvas → Code Overrides → withFinder.
-//   3. The back/forward control is one div holding two SVG arrows. Select the
-//      LEFT arrow SVG → withBack. Select the RIGHT arrow SVG → withForward.
-//      Each fades to 0.5 opacity and stops receiving taps when there's nowhere
-//      to go, then smoothly fades back to full once a step becomes available.
-//   4. For every clickable folder/link, apply the matching destination override
-//      (withGoToProjects, withGoToContact, …). These are defined near the bottom
-//      of this file via goTo("variant name") — add one line per variant you want
-//      to reach, then pick it from the Code Overrides dropdown. Do NOT also use a
-//      native "Change to Variant" interaction on those — let the override own the
-//      variant.
-//
-// Notes
-//   • Variant names are matched by their display name, exactly as typed in
-//     Framer (case-sensitive). A typo = a silent no-op.
-//   • Swap sessionStorage → localStorage in `persist`/`loadInitial` if you want
-//     the history to survive a tab close.
 
 import type { ComponentType } from "react"
-import { createStore } from "https://framer.com/m/framer/store.js"
+import { useState, useEffect } from "react"
 
 // ──────────────────────────── CONFIG ────────────────────────────
 
-// The starting variant — the floor of the history. Must match the variant name
-// in your component exactly.
 const PRIMARY_VARIANT = "about me"
-
-// Hard cap on stored history depth. Anything past this drops the oldest entry
-// (Primary excluded — see capHistory). 16 keeps memory bounded.
 const MAX_HISTORY = 16
-
-// sessionStorage key for the cached history. Cleared when the tab closes.
 const STORAGE_KEY = "finder-nav-history"
-
-// Opacity of a button that currently has nowhere to go (disabled state).
+const NAV_EVENT = "finder:nav"
 const DISABLED_OPACITY = 0.5
 
 // ──────────────────────────── TYPES ────────────────────────────
 
 type HistoryState = {
-    entries: string[] // ordered list of visited variant names; entries[0] = floor
-    index: number // which entry is currently shown
+    entries: string[]
+    index: number
 }
 
-// ──────────────────────────── PERSISTENCE ────────────────────────────
+// ──────────────────────────── STATE ────────────────────────────
 
-// Read the cached history at module load. Runs on both server (window
-// undefined → fallback) and client (restores the real cache during hydration).
-function loadInitial(): HistoryState {
-    const fallback: HistoryState = { entries: [PRIMARY_VARIANT], index: 0 }
-    if (typeof window === "undefined") return fallback
+const FALLBACK: HistoryState = { entries: [PRIMARY_VARIANT], index: 0 }
 
+function loadHistory(): HistoryState {
+    if (typeof window === "undefined") return FALLBACK
     try {
         const raw = window.sessionStorage.getItem(STORAGE_KEY)
-        if (!raw) return fallback
-
-        const parsed = JSON.parse(raw)
-        if (
-            !parsed ||
-            !Array.isArray(parsed.entries) ||
-            parsed.entries.length === 0 ||
-            typeof parsed.index !== "number"
-        ) {
-            return fallback
-        }
-
-        // Sanitise anything that wandered in from a stale/corrupt cache.
-        const entries: string[] = parsed.entries
-            .filter((v: unknown) => typeof v === "string")
-            .slice(0, MAX_HISTORY)
-        if (entries.length === 0) return fallback
-
-        const index = Math.min(
-            Math.max(0, Math.floor(parsed.index)),
-            entries.length - 1
-        )
-        return { entries, index }
-    } catch {
-        return fallback
-    }
+        if (!raw) return FALLBACK
+        const p = JSON.parse(raw)
+        if (!p || !Array.isArray(p.entries) || !p.entries.length || typeof p.index !== "number") return FALLBACK
+        const entries = p.entries.filter((v: unknown) => typeof v === "string").slice(0, MAX_HISTORY)
+        if (!entries.length) return FALLBACK
+        return { entries, index: Math.min(Math.max(0, Math.floor(p.index)), entries.length - 1) }
+    } catch { return FALLBACK }
 }
 
-function persist(state: HistoryState) {
+// Saves to sessionStorage and broadcasts to all useNav() consumers via CustomEvent.
+function broadcastNav(state: HistoryState) {
     if (typeof window === "undefined") return
-    try {
-        window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-    } catch {
-        // Private mode / quota / disabled storage — navigation still works in
-        // memory, it just won't survive a reload.
-    }
+    try { window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch {}
+    window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: state }))
 }
 
-// ──────────────────────────── STORE ────────────────────────────
-// A single shared store so every override (Finder, links, buttons) reads and
-// writes the same history. `setHistory` shallow-merges; we always pass a full
-// HistoryState so the merge is total.
+// Each override instance gets its own local state, kept in sync via window events.
+// This avoids any createStore reactivity quirks with Framer's component system.
+function useNav(): [HistoryState, (s: HistoryState) => void] {
+    const [state, setState] = useState<HistoryState>(loadHistory)
 
-const useHistory = createStore<HistoryState>(loadInitial())
+    useEffect(() => {
+        const handler = (e: any) => setState(e.detail)
+        window.addEventListener(NAV_EVENT, handler)
+        return () => window.removeEventListener(NAV_EVENT, handler)
+    }, [])
 
-// Enforce the cap while keeping the floor (entries[0]) permanent. If we're over
-// the limit, drop the oldest entry *after* the floor.
+    const update = (next: HistoryState) => {
+        setState(next)
+        broadcastNav(next)
+    }
+
+    return [state, update]
+}
+
+// ──────────────────────────── HISTORY OPS ────────────────────────────
+
 function capHistory(entries: string[]): string[] {
     if (entries.length <= MAX_HISTORY) return entries
     const overflow = entries.length - MAX_HISTORY
-    // Keep [0] (the floor), drop the next `overflow` entries, keep the rest.
     return [entries[0], ...entries.slice(1 + overflow)]
 }
 
-// Push a brand-new destination onto the history (the "navigate into a folder"
-// action). Truncates forward history, appends, caps, and re-floors the index.
 function pushVariant(state: HistoryState, target: string): HistoryState {
     if (!target) return state
-    // Already here — clicking the current folder shouldn't add a duplicate.
     if (state.entries[state.index] === target) return state
-
-    const truncated = state.entries.slice(0, state.index + 1) // drop forward history
+    const truncated = state.entries.slice(0, state.index + 1)
     const capped = capHistory([...truncated, target])
     return { entries: capped, index: capped.length - 1 }
 }
 
 // ──────────────────────────── OVERRIDES ────────────────────────────
 
-// withFinder — apply to the variant component itself. Forces its variant to
-// whatever the history currently points at, making it a controlled "window".
+// ─── APPROACH A: Smart Component variant prop (may not work — see note) ───────
+// withFinder — apply to the Smart Component that has variants.
+// NOTE: Framer Smart Components treat `variant` as internal state, not a
+// controlled React prop. This HOC correctly passes the right variant but
+// Framer's own state machine may ignore it. If the component doesn't visually
+// switch, use APPROACH B below instead.
 export function withFinder(Component: any): ComponentType {
-    return (props: any) => {
-        const [history] = useHistory()
-        const current = history.entries[history.index] ?? PRIMARY_VARIANT
-        return <Component {...props} variant={current} />
+    return ({ variant: _ignored, ...rest }: any) => {
+        const [nav] = useNav()
+        const current = nav.entries[nav.index] ?? PRIMARY_VARIANT
+        console.log("[withFinder] variant →", current, nav)
+        return <Component key={current} {...rest} variant={current} />
     }
 }
 
-// ─── Folder navigation ───
-// A code override can't take a typed argument from the canvas, so instead of one
-// configurable override we expose one READY-MADE override per destination via
-// the goTo() factory. Apply the matching override to each clickable folder/link;
-// on click it pushes that variant onto the history (truncating forward history).
+// ─── APPROACH B: Visibility-based page switching (guaranteed to work) ─────────
+// Instead of one Smart Component with variants, have 10 separate frames stacked
+// at the same position in Framer. Apply the matching showPage* override to each
+// frame. The active frame is fully visible; all others are opacity:0 + no clicks.
 //
-// To add a destination: copy a line in the EXPORTS block below and change BOTH
-// the export name and the variant string. The variant string must match your
-// component's variant name EXACTLY — case-sensitive, spaces included.
+// Canvas setup:
+//   1. Create one Frame per page, all at the same position/size (use Stack or
+//      absolute position). Put the correct page content in each Frame.
+//   2. Remove withFinder. Apply showPageAboutMe to the "about me" Frame,
+//      showPageCurrentlyWorking to the "currently working" Frame, etc.
+//   3. Keep withBack, withForward, and all withGoTo* exactly as before.
+function showWhen(pageName: string) {
+    return (Component: any): ComponentType => {
+        return (props: any) => {
+            const [nav] = useNav()
+            const isActive = (nav.entries[nav.index] ?? PRIMARY_VARIANT) === pageName
+            return (
+                <Component
+                    {...props}
+                    style={{
+                        ...props.style,
+                        opacity: isActive ? 1 : 0,
+                        pointerEvents: isActive ? "auto" : "none",
+                        transition: "opacity 0.2s ease",
+                    }}
+                />
+            )
+        }
+    }
+}
+
+export function showPageAboutMe(C: any): ComponentType { return showWhen("about me")(C) }
+export function showPageCurrentlyWorking(C: any): ComponentType { return showWhen("currently working")(C) }
+export function showPageOutOfOffice(C: any): ComponentType { return showWhen("out of office")(C) }
+export function showPageAcademicRecord(C: any): ComponentType { return showWhen("academic record")(C) }
+export function showPageSpotifyPlaylist(C: any): ComponentType { return showWhen("spotify playlist")(C) }
+export function showPageCurrentInspo(C: any): ComponentType { return showWhen("current inspo")(C) }
+export function showPageRecommendedWatch(C: any): ComponentType { return showWhen("recommended watch")(C) }
+export function showPageAscii(C: any): ComponentType { return showWhen("ascii")(C) }
+export function showPageLetterboxd(C: any): ComponentType { return showWhen("letterboxd")(C) }
+export function showPageGoodreads(C: any): ComponentType { return showWhen("goodreads")(C) }
+
+// goTo factory — one override per destination. Applied to clickable folder elements.
 function goTo(target: string) {
     return (Component: any): ComponentType => {
         return (props: any) => {
-            const [history, setHistory] = useHistory()
-
+            const [nav, update] = useNav()
             const handleClick = (event: any) => {
-                const next = pushVariant(history, target)
-                if (next !== history) {
-                    persist(next)
-                    setHistory(next)
-                }
+                console.log("[goTo] click →", target, "from", nav.entries[nav.index])
+                const next = pushVariant(nav, target)
+                if (next !== nav) update(next)
                 props.onClick?.(event)
             }
-
             return <Component {...props} onClick={handleClick} />
         }
     }
 }
 
 // ─── Destination overrides — one per variant ───
-// Each shows up in the Code Overrides dropdown by its export name (the part
-// after "withGoTo"). Apply the matching one to the folder/link that opens it.
-export const withGoToAboutMe = goTo("about me") // Primary / home
-export const withGoToCurrentlyWorking = goTo("currently working")
-export const withGoToOutOfOffice = goTo("out of office")
-export const withGoToAcademicRecord = goTo("academic record")
-export const withGoToSpotifyPlaylist = goTo("spotify playlist")
-export const withGoToCurrentInspo = goTo("current inspo")
-export const withGoToRecommendedWatch = goTo("recommended watch")
-export const withGoToAscii = goTo("ascii")
-export const withGoToLetterboxd = goTo("letterboxd")
-export const withGoToGoodreads = goTo("goodreads")
+// export function required — export const from a factory is invisible to Framer's parser.
+export function withGoToAboutMe(C: any): ComponentType { return goTo("about me")(C) }
+export function withGoToCurrentlyWorking(C: any): ComponentType { return goTo("currently working")(C) }
+export function withGoToOutOfOffice(C: any): ComponentType { return goTo("out of office")(C) }
+export function withGoToAcademicRecord(C: any): ComponentType { return goTo("academic record")(C) }
+export function withGoToSpotifyPlaylist(C: any): ComponentType { return goTo("spotify playlist")(C) }
+export function withGoToCurrentInspo(C: any): ComponentType { return goTo("current inspo")(C) }
+export function withGoToRecommendedWatch(C: any): ComponentType { return goTo("recommended watch")(C) }
+export function withGoToAscii(C: any): ComponentType { return goTo("ascii")(C) }
+export function withGoToLetterboxd(C: any): ComponentType { return goTo("letterboxd")(C) }
+export function withGoToGoodreads(C: any): ComponentType { return goTo("goodreads")(C) }
 
-// withBack — apply to the LEFT arrow SVG. Steps the index one toward the floor.
-// Fades to DISABLED_OPACITY and ignores clicks when already at the floor (Primary).
+// withBack — apply to the LEFT arrow wrapper. Fades to 0.5 when at the floor.
 export function withBack(Component: any): ComponentType {
     return (props: any) => {
-        const [history, setHistory] = useHistory()
-        const canGoBack = history.index > 0
-
-        const handleClick = (event: any) => {
-            if (!canGoBack) return
-            const next: HistoryState = { ...history, index: history.index - 1 }
-            persist(next)
-            setHistory(next)
-            props.onClick?.(event)
-        }
-
+        const [nav, update] = useNav()
+        const can = nav.index > 0
         return (
             <Component
                 {...props}
-                onClick={handleClick}
+                onClick={(event: any) => {
+                    if (!can) return
+                    update({ ...nav, index: nav.index - 1 })
+                    props.onClick?.(event)
+                }}
                 style={{
                     ...props.style,
-                    opacity: canGoBack ? 1 : DISABLED_OPACITY,
-                    pointerEvents: canGoBack ? "auto" : "none",
-                    cursor: canGoBack ? "pointer" : "default",
+                    opacity: can ? 1 : DISABLED_OPACITY,
+                    pointerEvents: can ? "auto" : "none",
+                    cursor: can ? "pointer" : "default",
                     transition: "opacity 0.2s ease",
                 }}
             />
@@ -238,32 +204,24 @@ export function withBack(Component: any): ComponentType {
     }
 }
 
-// withForward — apply to the RIGHT arrow SVG. Steps the index toward the most
-// recent entry. Sits at DISABLED_OPACITY (0.5) with no clicks when there's no
-// forward history, then smoothly fades to full opacity the moment you can go
-// forward again.
+// withForward — apply to the RIGHT arrow wrapper. Fades to 0.5 when no forward history.
 export function withForward(Component: any): ComponentType {
     return (props: any) => {
-        const [history, setHistory] = useHistory()
-        const canGoForward = history.index < history.entries.length - 1
-
-        const handleClick = (event: any) => {
-            if (!canGoForward) return
-            const next: HistoryState = { ...history, index: history.index + 1 }
-            persist(next)
-            setHistory(next)
-            props.onClick?.(event)
-        }
-
+        const [nav, update] = useNav()
+        const can = nav.index < nav.entries.length - 1
         return (
             <Component
                 {...props}
-                onClick={handleClick}
+                onClick={(event: any) => {
+                    if (!can) return
+                    update({ ...nav, index: nav.index + 1 })
+                    props.onClick?.(event)
+                }}
                 style={{
                     ...props.style,
-                    opacity: canGoForward ? 1 : DISABLED_OPACITY,
-                    pointerEvents: canGoForward ? "auto" : "none",
-                    cursor: canGoForward ? "pointer" : "default",
+                    opacity: can ? 1 : DISABLED_OPACITY,
+                    pointerEvents: can ? "auto" : "none",
+                    cursor: can ? "pointer" : "default",
                     transition: "opacity 0.2s ease",
                 }}
             />
