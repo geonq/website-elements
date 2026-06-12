@@ -25,7 +25,7 @@
 // (case + spaces).
 
 import type { ComponentType } from "react"
-import { forwardRef } from "react"
+import { forwardRef, useEffect } from "react"
 import { createStore } from "https://framer.com/m/framer/store.js@^1.0.0"
 
 // ── CONFIG ───────────────────────────────────────────────────────
@@ -36,8 +36,8 @@ const DISABLED_OPACITY = 0.5
 const MOBILE_SUFFIX = " mobile" // mobile variants are the desktop names + this suffix
 
 // ── TYPES ────────────────────────────────────────────────────────
-type HistoryState = { entries: string[]; index: number }
-const FALLBACK: HistoryState = { entries: [PRIMARY_VARIANT], index: 0 }
+type HistoryState = { entries: string[]; index: number; isMobile: boolean }
+const FALLBACK: HistoryState = { entries: [PRIMARY_VARIANT], index: 0, isMobile: false }
 
 // ── PERSISTENCE ──────────────────────────────────────────────────
 function loadHistory(): HistoryState {
@@ -87,15 +87,18 @@ function currentVariant(state: HistoryState): string {
 // Drives the visible variant. Apply to the DESKTOP content component INSTANCE.
 export function withContent(Component: any): ComponentType {
     return forwardRef((props: any, ref) => {
-        const [nav] = useNav()
+        const [nav, setNav] = useNav()
+        useEffect(() => { setNav(s => ({ ...s, isMobile: false })) }, [])
         return <Component ref={ref} {...props} variant={currentVariant(nav)} />
     })
 }
 
 // Same as withContent, but appends " mobile". Apply to the MOBILE content INSTANCE.
+// Sets isMobile:true in the store so withYellow knows not to navigate to "extra".
 export function withContentMobile(Component: any): ComponentType {
     return forwardRef((props: any, ref) => {
-        const [nav] = useNav()
+        const [nav, setNav] = useNav()
+        useEffect(() => { setNav(s => ({ ...s, isMobile: true })) }, [])
         return <Component ref={ref} {...props} variant={currentVariant(nav) + MOBILE_SUFFIX} />
     })
 }
@@ -124,7 +127,24 @@ function goTo(target: string) {
 // Both overrides target it: withYellow is the traffic-light button; withExtra is
 // a generic alias to drop on any element that should open the extra variant.
 export function withExtra(C: any): ComponentType { return goTo("extra")(C) }
-export function withYellow(C: any): ComponentType { return goTo("extra")(C) }
+export function withYellow(C: any): ComponentType {
+    return forwardRef((props: any, ref) => {
+        const [nav, setNav] = useNav()
+        return (
+            <C
+                ref={ref}
+                {...props}
+                onClick={(e: any) => {
+                    if (nav.isMobile) return
+                    const next = pushVariant(nav, "extra")
+                    if (next !== nav) commit(setNav, next)
+                    props.onClick?.(e)
+                }}
+                style={{ ...props.style, cursor: "pointer" }}
+            />
+        )
+    })
+}
 
 export function withRed(Component: any): ComponentType {
     return forwardRef((props: any, ref) => {
