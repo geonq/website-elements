@@ -182,14 +182,13 @@ export function withGreen(Component: any): ComponentType {
 }
 
 export function withGoToAboutMe(C: any): ComponentType { return goTo("about me")(C) }
-export function withGoToCurrentlyWorking(C: any): ComponentType { return goTo("currently working")(C) }
+export function withGoToWorkAndProjects(C: any): ComponentType { return goTo("work & projects")(C) }
 export function withGoToOutOfOffice(C: any): ComponentType { return goTo("out of office")(C) }
 export function withGoToAcademicRecord(C: any): ComponentType { return goTo("academic record")(C) }
 export function withGoToSpotifyPlaylist(C: any): ComponentType { return goTo("spotify playlist")(C) }
 export function withGoToCurrentInspo(C: any): ComponentType { return goTo("current inspo")(C) }
 export function withGoToRecommendedWatch(C: any): ComponentType { return goTo("recommended watch")(C) }
 export function withGoToAscii(C: any): ComponentType { return goTo("ascii")(C) }
-export function withGoToLetterboxd(C: any): ComponentType { return goTo("letterboxd")(C) }
 export function withGoToGoodreads(C: any): ComponentType { return goTo("goodreads")(C) }
 
 export function withBack(Component: any): ComponentType {
