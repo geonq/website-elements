@@ -1,14 +1,16 @@
 // @ts-nocheck
 import { forwardRef, type ComponentType, useSyncExternalStore } from "react"
 
-const WORKER_URL = "https://goodreads.domkegeorg2017.workers.dev/goodreads" // CHANGE ME
-const POLL_INTERVAL_MS = 30 * 60 * 1_000 // 30 minutes
+const WORKER_URL = "https://goodreads.domkegeorg2017.workers.dev/goodreads?v=2"
+const POLL_INTERVAL_MS = 30 * 60 * 1_000
 const FALLBACK_TEXT = "—"
+
+// ── Data store ────────────────────────────────────────────────────────────────
 
 type BookInfo = {
     title: string | null
     author: string | null
-    coverUrl: string | null
+    link: string | null
 }
 
 type GoodreadsData = {
@@ -48,12 +50,14 @@ function getSnapshot() {
     return state
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null
+const SERVER_SNAPSHOT: StoreState = { data: null, loading: false, error: null }
+
+function getServerSnapshot() {
+    return SERVER_SNAPSHOT
 }
 
-function getStyle(style: unknown): Record<string, unknown> {
-    return isRecord(style) ? style : {}
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null
 }
 
 function formatText(value: string | null | undefined): string {
@@ -66,7 +70,7 @@ function parseBookInfo(raw: unknown): BookInfo | null {
     return {
         title: typeof raw.title === "string" ? raw.title : null,
         author: typeof raw.author === "string" ? raw.author : null,
-        coverUrl: typeof raw.coverUrl === "string" ? raw.coverUrl : null,
+        link: typeof raw.link === "string" ? raw.link : null,
     }
 }
 
@@ -166,14 +170,14 @@ function subscribe(listener: () => void) {
 }
 
 function useGoodreadsStore() {
-    return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+    return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
 }
 
 export function useGoodreadsData() {
     return useGoodreadsStore()
 }
 
-// ── Currently reading ─────────────────────────────────────────────────────────
+// ── Text overrides ────────────────────────────────────────────────────────────
 
 export const withCurrentTitle = (Component): ComponentType => {
     return forwardRef((props, ref) => {
@@ -191,31 +195,6 @@ export const withCurrentAuthor = (Component): ComponentType => {
     })
 }
 
-export const withCurrentCover = (Component): ComponentType => {
-    return forwardRef((props, ref) => {
-        const { data } = useGoodreadsStore()
-        const coverUrl = data?.currentlyReading?.coverUrl ?? null
-        if (!coverUrl) return <Component ref={ref} {...props} />
-        return (
-            <Component
-                ref={ref}
-                {...props}
-                image={coverUrl}
-                src={coverUrl}
-                style={{
-                    ...getStyle(props?.style),
-                    backgroundImage: `url("${coverUrl}")`,
-                    backgroundPosition: "center",
-                    backgroundRepeat: "no-repeat",
-                    backgroundSize: "cover",
-                }}
-            />
-        )
-    })
-}
-
-// ── Last finished ─────────────────────────────────────────────────────────────
-
 export const withLastTitle = (Component): ComponentType => {
     return forwardRef((props, ref) => {
         const { data } = useGoodreadsStore()
@@ -232,29 +211,6 @@ export const withLastAuthor = (Component): ComponentType => {
     })
 }
 
-export const withLastCover = (Component): ComponentType => {
-    return forwardRef((props, ref) => {
-        const { data } = useGoodreadsStore()
-        const coverUrl = data?.lastFinished?.coverUrl ?? null
-        if (!coverUrl) return <Component ref={ref} {...props} />
-        return (
-            <Component
-                ref={ref}
-                {...props}
-                image={coverUrl}
-                src={coverUrl}
-                style={{
-                    ...getStyle(props?.style),
-                    backgroundImage: `url("${coverUrl}")`,
-                    backgroundPosition: "center",
-                    backgroundRepeat: "no-repeat",
-                    backgroundSize: "cover",
-                }}
-            />
-        )
-    })
-}
-
 export const withLastRating = (Component): ComponentType => {
     return forwardRef((props, ref) => {
         const { data } = useGoodreadsStore()
@@ -264,13 +220,56 @@ export const withLastRating = (Component): ComponentType => {
     })
 }
 
-// ── Totals ────────────────────────────────────────────────────────────────────
-
 export const withTotalRead = (Component): ComponentType => {
     return forwardRef((props, ref) => {
         const { data } = useGoodreadsStore()
         const total = data?.totalRead ?? null
         const text = total !== null ? new Intl.NumberFormat("en-US").format(total) : FALLBACK_TEXT
         return <Component ref={ref} {...props} text={text} />
+    })
+}
+
+// ── Link overrides ────────────────────────────────────────────────────────────
+// Apply to a Frame. Must be tested in Preview mode — canvas clicks just select.
+
+export const withCurrentLink = (Component): ComponentType => {
+    return forwardRef((props: any, ref) => {
+        const { data } = useGoodreadsStore()
+        const link = data?.currentlyReading?.link ?? null
+        console.log("[Goodreads] currentLink value:", link)
+        if (!link) return <Component ref={ref} {...props} />
+        return (
+            <Component
+                ref={ref}
+                {...props}
+                onClick={(e: any) => {
+                    console.log("[Goodreads] currentLink clicked, opening:", link)
+                    window.open(link, "_blank", "noopener,noreferrer")
+                    props.onClick?.(e)
+                }}
+                style={{ ...props.style, cursor: "pointer" }}
+            />
+        )
+    })
+}
+
+export const withLastLink = (Component): ComponentType => {
+    return forwardRef((props: any, ref) => {
+        const { data } = useGoodreadsStore()
+        const link = data?.lastFinished?.link ?? null
+        console.log("[Goodreads] lastLink value:", link)
+        if (!link) return <Component ref={ref} {...props} />
+        return (
+            <Component
+                ref={ref}
+                {...props}
+                onClick={(e: any) => {
+                    console.log("[Goodreads] lastLink clicked, opening:", link)
+                    window.open(link, "_blank", "noopener,noreferrer")
+                    props.onClick?.(e)
+                }}
+                style={{ ...props.style, cursor: "pointer" }}
+            />
+        )
     })
 }
